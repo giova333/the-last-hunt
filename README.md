@@ -1,58 +1,79 @@
-# The Last Hunt — Saint Orlan's Ward (vertical slice)
+# The Last Hunt
 
-A gothic Souls-like in the browser (Three.js + Vite). One level: the plague street, the Cistern Plaza, the cathedral steps, and the boss — **the Hound of Saint Orlan**.
+A dark gothic action game in the spirit of the Souls series, playable in your browser.
+
+You are a hunter sent into **Saint Orlan's Ward**, a plague-sealed district of the city of Veyr. Fight your way through a moonlit street and a ruined plaza, climb the cathedral steps, pass through the fog, and face **the Hound of Saint Orlan**.
+
+![The Hound of Saint Orlan in the cathedral courtyard](docs/boss.jpg)
+
+**▶ Play:** https://giova333.github.io/the-last-hunt/ (desktop or phone, no install)
+
+This is a **vertical slice**: one complete level with one boss.
+
+## The game
+
+- **Deliberate combat.** Every swing, roll and sprint costs stamina. Read the enemy, dodge through its attack, then punish.
+- **Strike back to heal.** Damage you take can be partly won back by hitting the enemy within a few seconds.
+- **Blood vials.** You carry four. Lighting or resting at a lantern refills them, saves your progress, and brings enemies back.
+- **Plague Seers.** Erratic beak-masked figures with heavy censers that roam the streets.
+- **The Hound.** A 6-metre two-phase boss. At half health it roars, the cathedral's rose window turns blood-red, and it gets faster and more aggressive.
+- **Atmosphere.** Wet cobblestones, fog, torch-lit houses, an original orchestral score and positional sound.
+
+![The plague street](docs/street.jpg)
+
+## Controls
+
+| Keyboard and mouse | |
+|---|---|
+| **WASD** / **Shift** | move / sprint |
+| **Left click** | slash (press again for a 3-hit combo) |
+| **Right click** or **F** | heavy cleave |
+| **Space** | roll (invulnerable for a moment) |
+| **Q** or **Tab** | lock on to an enemy |
+| **R** | drink a blood vial |
+| **E** | interact: lanterns, notes, fog gate |
+| **Esc** | pause |
+
+**On a phone or tablet,** touch controls appear automatically. Left thumb: joystick (push to the edge to sprint). Right thumb: drag to look. On-screen buttons: slash, heavy, roll, vial, lock, use. Landscape works best.
+
+## Run it locally
+
+Requires [Node.js](https://nodejs.org) 20+.
 
 ```bash
 npm install
-npm run dev        # http://localhost:5173
-npm run build      # static build in dist/
+npm run dev      # open http://localhost:5173
+npm run build    # production build in dist/
 ```
 
-## Deploy (GitHub Pages)
-The build is a static site with relative paths (`vite.config.js` → `base: './'`), so it works from any sub-path.
-1. Push this repo to GitHub (branch `main`).
-2. Repo **Settings → Pages → Build and deployment → Source: GitHub Actions** (one time).
-3. Every push to `main` runs `.github/workflows/deploy.yml` (`npm ci && npm run build`, publishes `dist/`).
-   The game appears at `https://<user>.github.io/<repo>/`. It can also be run manually from the Actions tab.
+## How it was made
 
-## Controls
-| | |
-|---|---|
-| WASD / Shift | move / sprint |
-| Space | roll (i-frames) |
-| LMB / RMB (or F) | slash / heavy cleave |
-| Q, MMB or Tab | lock-on |
-| R | blood vial (heal, cures plague) |
-| E | interact: lanterns, notes, fog gate |
-| Esc | pause |
+Built with AI-assisted tools, starting from the concept art in `images/`:
 
-**Phone / tablet** (touch detected automatically; force with `?touch=1` or `?touch=0`): left thumb = floating joystick (push to the rim to sprint), right thumb = drag to look, on-screen **Slash · Heavy · Roll · Vial · Lock · Use** buttons and a pause button. Best in landscape; the game requests fullscreen + landscape where the browser allows it.
+- **3D models.** [Tripo](https://www.tripo3d.ai) generated the characters (with rigging and animation), weapons, props and the cathedral, from the concept art or text descriptions.
+- **Model cleanup.** [Blender](https://www.blender.org) ran headless from scripts in `tools/` to merge animations, orient and scale models, and compress textures.
+- **Music and sound effects.** Generated with [ElevenLabs](https://elevenlabs.io).
+- **Engine.** [Three.js](https://threejs.org) in plain JavaScript, built with [Vite](https://vitejs.dev).
+- **Animation in code.** The hunter's sword cuts, the Hound's claw attacks and vial drinking are animated procedurally, layered on the generated animations.
+- **Built with [Claude Code](https://claude.com/claude-code).**
 
-**Mechanics:** stamina, lock-on, poise and stagger, *blood reclaim* (damage you take can be won back by striking within 4 s), plague pools, lantern checkpoints (resting resets enemies), and a two-phase boss (roar at 50% → faster, with a charge and a frenzy combo).
+The generation commands are listed in [`tools/`](tools/). Sound generation reads an ElevenLabs key from a git-ignored `.env.local` file.
 
-## Asset pipeline
-Concept art (`images/`) → cropped views (`art/refs/`) → **Tripo** → **Blender** (headless) → `public/models/`.
+## Project layout
 
-| Step | Tool | Command |
-|---|---|---|
-| Model from front+back views | Tripo P2 multiview | `tripo make front.png back.png --model tripo-p2 -p face_limit=20000 --then rig-check,rig` |
-| Animations | Tripo retarget | `tripo anim retarget <rig_task> --animation preset:idle preset:walk preset:run preset:slash preset:hurt --animate-in-place` |
-| Weapons | Tripo P2 image | `tripo make cleaver.png --model tripo-p2 -p face_limit=6000` |
-| Merge clips, JPEG/downscale textures | Blender | `Blender -b --python tools/build_character.py -- out.glb 2048 anim.glb [extra.glb]` |
-| Orient prop, grip at origin | Blender | `Blender -b --python tools/build_prop.py -- in.glb out.glb 1024 0.12 0 preview.png` |
-| Environment props (text → 3D) | Tripo P2 + Blender | `tripo generate text-to-model "…" -p face_limit=10000`, then `Blender -b --python tools/build_env.py -- model.glb public/models/env/name.glb 1024 preview.png` (script: `tools/gen_env_props.sh`) |
-| Small set-dressing props | Tripo H3.1 (~30 cr) + Blender | `tools/gen_detail_props.sh`, then `tools/build_env.py` |
-| Arena kit / hero props | Tripo P2 (~110 cr) + Blender | `tools/gen_arena_props.sh` |
-| Music + SFX | ElevenLabs | `node tools/gen_audio.mjs [sfx|music]` (key in git-ignored `.env.local`; resumable) |
-| Inspect / contact-sheet clips | Blender, node | `tools/inspect_glb.py`, `tools/contact_sheet.py`, `tools/montage.py`, `tools/motion_energy.mjs` |
+```
+src/            game code: main.js (loop), world.js (level), player.js, seer.js, boss.js,
+                swing.js / claws.js / drink.js (procedural animation), audio.js, ui.js, touch.js
+public/models/  characters, weapons and environment props (.glb)
+public/audio/   music and sound effects
+tools/          asset generation and Blender processing scripts
+images/         original concept art
+```
 
-Tripo's preset `slash` is a 6.4 s combo and `hurt` is long. `src/assets.js` (`CLIP_TRIM`) trims them in-engine, keeping every bone track: slash keeps the first overhead chop (1.0–2.7 s, impact at 66%), with the root bone's twist frozen so attackers keep facing their target.
-The hunter's cuts are procedural (`src/swing.js`): torso twist + two-bone arm IK along a diagonal arc, blade aligned to the swing, and a trail. Light attacks alternate forehand/backhand, heavy is a high cleave. Tripo models face sideways and some clips drift; `CharacterModel.calibrate()` measures both from the bones at load and corrects them.
-Drinking a vial is procedural too (`src/drink.js`). Environment props live in `public/models/env/` (statue, lamp, doorway, balustrade, cart, cage, tree, coffins); `makeEnv()` in `assets.js` turns them to face +Z and scales them.
-Every GLB is optional: if one is missing the game falls back to a procedural stand-in figure.
+## Deploying
 
-## Code map
-`src/main.js` game loop, interactions, checkpoints, projectiles · `world.js` level, lighting, collision · `player.js` · `seer.js` · `boss.js` · `camera.js` · `fx.js` particles and decals · `audio.js` (all sound is synthesized) · `ui.js`.
+The site is static and uses relative paths, so it works from any folder. Every push to `main` builds and publishes it to GitHub Pages through `.github/workflows/deploy.yml`. To set this up once: repository **Settings → Pages → Source: GitHub Actions**.
 
-## Lore note
-The in-game notes and the boss name are **provisional** placeholders written in the bible's mystery tone (Saint Orlan's Ward purge, Grace, a guilty executioner). They don't define canon. Replace them once the full story bible is recovered.
+## About the story
+
+The world draws on an in-progress story bible: the city of Veyr, the substance called Grace, and the purge of Saint Orlan's Ward. The in-game notes and the boss's name are placeholders written in that tone, not final canon.
