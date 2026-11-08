@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>The Last Hunt</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700&family=EB+Garamond:ital@0;1&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <canvas id="game"></canvas>
+
+  <div id="hud" class="hidden">
+    <div id="bars">
+      <div class="bar hp"><div class="rally"></div><div class="fill"></div></div>
+      <div class="bar st"><div class="fill"></div></div>
+    </div>
+    <div id="vials"><span class="vial-icon"></span><span id="vial-count">3</span></div>
+    <div id="echoes"><span id="echo-count">0</span> <small>blood echoes</small></div>
+    <div id="enemy-bars"></div>
+    <div id="lock"></div>
+    <div id="prompt"></div>
+    <div id="area-title"></div>
+    <div id="boss" class="hidden">
+      <div class="name">The Hound of Saint Orlan<span class="dmg"></span></div>
+      <div class="bar boss-hp"><div class="trail"></div><div class="fill"></div></div>
+    </div>
+    <div id="note" class="hidden"><div class="note-body"></div><div class="note-hint">E — close</div></div>
+    <div id="vignette"></div>
+    <div id="poison"></div>
+  </div>
+
+  <div id="title" class="screen">
+    <h1>The Last Hunt</h1>
+    <p class="sub">Veyr · Saint Orlan's Ward</p>
+    <button id="start" disabled>Begin the Hunt</button>
+    <div class="controls">
+      <div><b>WASD</b> move · <b>Shift</b> sprint · <b>Space</b> roll</div>
+      <div><b>LMB</b> slash · <b>RMB</b> heavy · <b>Q / MMB</b> lock-on</div>
+      <div><b>R</b> blood vial · <b>E</b> interact · <b>Esc</b> pause</div>
+    </div>
+    <p class="loading" id="loading">Gathering the dead…</p>
+  </div>
+
+  <div id="banner" class="screen hidden"><h2></h2><p></p></div>
+  <div id="pause" class="screen hidden"><h2>Paused</h2><p>Click to resume</p></div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

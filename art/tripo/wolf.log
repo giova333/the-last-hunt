@@ -1,0 +1,36 @@
+── Plan ──────────────────────────
+input: ./art/refs/wolf_front.png ./art/refs/wolf_back.png
+model: P2-20260801 — explicit --model
+steps:
+  1. multiview-to-model  POST /v3/generation/multiview-to-model — generate a 3D model from multiple views
+     face_limit=30000 pbr=false model="P2-20260801"
+  2. rig-check  POST /v3/animations/rig-check — check riggability (no model output; stops the chain if not riggable)
+  3. rig  POST /v3/animations/rig — auto-rig a skeleton (model selected after rig-check: quadruped uses v2.5-20260210; otherwise v3.0-20260909)
+deliverables: GLB
+cost impact:
+  · estimated generation cost: 110 credits (official list price; chain steps not estimated)
+──────────────────────────────────
+model: P2-20260801 (explicit --model)
+task created c06bc7bd-1618-4c4c-ad94-84697aa3b001 (@wolf)
+multiview_to_model · queued
+multiview_to_model · running 9% · c06bc7bd
+multiview_to_model · running 18% · c06bc7bd
+multiview_to_model · running 29% · c06bc7bd
+multiview_to_model · running 47% · c06bc7bd
+multiview_to_model · running 74% · c06bc7bd
+multiview_to_model · running 99% · c06bc7bd
+multiview_to_model · success 100% · c06bc7bd
+✓ multiview_to_model · c06bc7bd-1618-4c4c-ad94-84697aa3b001 · 110 credits
+task created 3312ed25-5770-426f-8bd4-784d586c2ee0 (@wolf-rig-check)
+animate_prerigcheck · queued
+✓ animate_prerigcheck · 3312ed25-5770-426f-8bd4-784d586c2ee0 · 0 credits
+downloading artifacts…
+✓ artifacts saved to art/tripo/wolf/tripo-out/wolf-rig-check-3312ed25
+using rig-check recommendation: biped
+task created 74c8d649-464e-48b6-aedb-2e2e9bc293b3 (@wolf-rig)
+animate_rig · queued
+animate_rig · running 78% · 74c8d649
+animate_rig · success 100% · 74c8d649
+✓ animate_rig · 74c8d649-464e-48b6-aedb-2e2e9bc293b3 · 25 credits
+downloading artifacts…
+✓ artifacts saved to art/tripo/wolf/tripo-out/wolf-rig-74c8d649

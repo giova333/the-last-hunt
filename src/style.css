@@ -1,0 +1,70 @@
+:root {
+  --blood: #8e1b1b;
+  --blood-hi: #c0392b;
+  --gold: #c9a46a;
+  --bone: #e8dcc4;
+  --ink: #0b0809;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; overflow: hidden; background: #000; color: var(--bone); font-family: 'EB Garamond', Georgia, serif; }
+canvas#game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+.hidden { display: none !important; }
+
+#hud { position: fixed; inset: 0; pointer-events: none; }
+#bars { position: absolute; left: 32px; top: 28px; display: flex; flex-direction: column; gap: 6px; }
+.bar { position: relative; height: 12px; background: rgba(0,0,0,.6); border: 1px solid rgba(201,164,106,.45); overflow: hidden; }
+.bar .fill, .bar .rally, .bar .trail { position: absolute; left: 0; top: 0; bottom: 0; transform-origin: left; }
+.bar.hp { width: 340px; }
+.bar.hp .fill { width: 100%; background: linear-gradient(#b52a2a, #6d1010); }
+.bar.hp .rally { width: 100%; background: #e0b070; opacity: .55; }
+.bar.st { width: 260px; height: 8px; }
+.bar.st .fill { width: 100%; background: linear-gradient(#7aa36a, #3f6234); }
+#vials { position: absolute; left: 32px; bottom: 32px; display: flex; align-items: center; gap: 10px; font-family: Cinzel, serif; font-size: 22px; text-shadow: 0 0 6px #000; }
+.vial-icon { width: 18px; height: 30px; border-radius: 4px 4px 9px 9px; background: linear-gradient(transparent 25%, var(--blood-hi) 25%); border: 2px solid var(--gold); }
+#echoes { position: absolute; right: 36px; bottom: 32px; font-family: Cinzel, serif; font-size: 22px; text-shadow: 0 0 6px #000; }
+#echoes small { font-size: 13px; opacity: .7; }
+#prompt { position: absolute; left: 50%; bottom: 22%; transform: translateX(-50%); font-family: Cinzel, serif; font-size: 18px; letter-spacing: 1px; background: rgba(0,0,0,.55); padding: 6px 18px; border-top: 1px solid var(--gold); border-bottom: 1px solid var(--gold); opacity: 0; transition: opacity .2s; }
+#prompt.on { opacity: 1; }
+#area-title { position: absolute; left: 0; right: 0; top: 30%; text-align: center; font-family: Cinzel, serif; font-size: 44px; letter-spacing: 6px; opacity: 0; transition: opacity 1.2s; text-shadow: 0 0 20px #000; }
+#area-title.on { opacity: 1; }
+#lock { position: absolute; width: 14px; height: 14px; margin: -7px 0 0 -7px; border: 2px solid #fff; border-radius: 50%; box-shadow: 0 0 8px var(--blood-hi); display: none; }
+#boss { position: absolute; left: 50%; bottom: 70px; transform: translateX(-50%); width: min(720px, 80vw); }
+#boss .name { font-family: Cinzel, serif; font-size: 18px; margin-bottom: 4px; text-shadow: 0 0 6px #000; }
+.bar.boss-hp { height: 10px; width: 100%; }
+.bar.boss-hp .fill { width: 100%; background: linear-gradient(#a32020, #5c0c0c); }
+.bar.boss-hp .trail { width: 100%; background: #d9b56f; transition: transform .8s ease-out .35s; }
+#vignette { position: absolute; inset: 0; background: radial-gradient(ellipse at center, transparent 55%, rgba(120,0,0,.0) 70%, rgba(80,0,0,.0) 100%); transition: background .3s; }
+#vignette.hurt { background: radial-gradient(ellipse at center, transparent 45%, rgba(140,0,0,.55) 100%); }
+#poison { position: absolute; inset: 0; background: radial-gradient(ellipse at center, transparent 50%, rgba(90,140,30,.4) 100%); opacity: 0; transition: opacity .4s; }
+#poison.on { opacity: 1; }
+#note { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%); width: min(520px, 86vw); background: rgba(14,10,8,.92); border: 1px solid var(--gold); padding: 28px 32px 18px; font-size: 19px; line-height: 1.5; font-style: italic; box-shadow: 0 0 40px #000; }
+.note-hint { margin-top: 14px; font-style: normal; font-size: 13px; opacity: .6; text-align: right; font-family: Cinzel, serif; }
+
+.screen { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+#title { background: radial-gradient(ellipse at center, rgba(20,8,8,.55), rgba(0,0,0,.92)), url('/title.jpg') center/cover; }
+#title h1 { font-family: Cinzel, serif; font-size: clamp(42px, 8vw, 96px); letter-spacing: 10px; margin: 0; color: var(--bone); text-shadow: 0 0 30px var(--blood); }
+#title .sub { font-style: italic; font-size: 20px; opacity: .8; margin: 8px 0 36px; }
+#title button { pointer-events: auto; font-family: Cinzel, serif; font-size: 20px; letter-spacing: 3px; color: var(--bone); background: rgba(60,8,8,.6); border: 1px solid var(--gold); padding: 14px 40px; cursor: pointer; transition: background .2s; }
+#title button:hover { background: rgba(120,16,16,.8); }
+#title button:disabled { opacity: .4; cursor: wait; }
+#title .controls { margin-top: 32px; font-size: 16px; opacity: .75; line-height: 1.8; }
+#title .loading { font-size: 14px; opacity: .6; margin-top: 18px; }
+#banner { background: linear-gradient(transparent 38%, rgba(0,0,0,.75) 45%, rgba(0,0,0,.75) 55%, transparent 62%); pointer-events: none; animation: fadein 1.5s; }
+#banner h2 { font-family: Cinzel, serif; font-size: clamp(32px, 6vw, 68px); letter-spacing: 8px; margin: 0; color: var(--blood-hi); text-shadow: 0 0 24px #000; }
+#banner.win h2 { color: var(--gold); }
+#banner p { font-style: italic; font-size: 18px; opacity: .8; }
+#pause { background: rgba(0,0,0,.6); cursor: pointer; }
+#pause h2 { font-family: Cinzel, serif; font-size: 40px; letter-spacing: 6px; margin: 0; }
+@keyframes fadein { from { opacity: 0; } to { opacity: 1; } }
+
+/* Enemy health bars */
+#enemy-bars { position: absolute; inset: 0; pointer-events: none; }
+.ebar { position: absolute; width: 96px; transform: translate(-50%, -100%); display: none; }
+.ebar .bar { height: 6px; width: 100%; background: rgba(0,0,0,.65); border: 1px solid rgba(0,0,0,.8); box-shadow: 0 0 4px #000; }
+.ebar .fill { width: 100%; background: linear-gradient(#c23030, #6d1010); }
+.ebar .trail { width: 100%; background: #d9b56f; transition: transform .7s ease-out .3s; }
+.dmg { font-family: Cinzel, serif; color: #f2dcc0; text-shadow: 0 0 4px #000, 0 0 2px #000; opacity: 0; transition: opacity .3s; }
+.dmg.on { opacity: 1; }
+.ebar .dmg { position: absolute; right: 0; bottom: 9px; font-size: 14px; }
+#boss .name { display: flex; justify-content: space-between; align-items: baseline; }
+#boss .dmg { font-size: 18px; }

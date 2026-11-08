@@ -1,0 +1,29 @@
+── Plan ──────────────────────────
+input: 219976c1-892d-4d12-b364-31047db23f90
+steps:
+  1. rig-check  POST /v3/animations/rig-check — check riggability (no model output; stops the chain if not riggable)
+  2. rig  POST /v3/animations/rig — auto-rig a skeleton (model selected after rig-check: quadruped uses v2.5-20260210; otherwise v3.0-20260909)
+deliverables: GLB
+cost impact:
+  · cost not estimated (not zero credits); notes below are cost impacts only; check regional official pricing and balance before running
+──────────────────────────────────
+task created 9102055e-7be4-4b6c-80de-1c273a790e52 (@seer2-rig-rig-check)
+animate_prerigcheck · queued
+✓ animate_prerigcheck · 9102055e-7be4-4b6c-80de-1c273a790e52 · 0 credits
+downloading artifacts…
+✓ artifacts saved to art/tripo/seer2-rig/tripo-out/seer2-rig-rig-check-9102055e
+using rig-check recommendation: biped
+task created 328fa06c-e834-4ad8-a12c-98b715d33f5a (@seer2-rig-rig)
+animate_rig · queued
+animate_rig · running 77% · 328fa06c
+animate_rig · running 99% · 328fa06c
+animate_rig · running 99% · 328fa06c
+animate_rig · running 99% · 328fa06c
+animate_rig · running 99% · 328fa06c
+animate_rig · running 99% · 328fa06c
+animate_rig · running 99% · 328fa06c
+animate_rig · running 99% · 328fa06c
+animate_rig · success 100% · 328fa06c
+✓ animate_rig · 328fa06c-e834-4ad8-a12c-98b715d33f5a · 25 credits
+downloading artifacts…
+✓ artifacts saved to art/tripo/seer2-rig/tripo-out/seer2-rig-rig-328fa06c

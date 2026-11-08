@@ -1,0 +1,22 @@
+── Plan ──────────────────────────
+input: ./art/refs/censer.png
+model: P2-20260801 — explicit --model
+steps:
+  1. image-to-model  POST /v3/generation/image-to-model — generate a 3D model from one image
+     face_limit=6000 pbr=false model="P2-20260801"
+deliverables: GLB
+cost impact:
+  · estimated generation cost: 110 credits (official list price)
+──────────────────────────────────
+model: P2-20260801 (explicit --model)
+task created dd7cbc86-983c-474c-b973-d3873fe9135d (@censer)
+image_to_model · queued
+image_to_model · running 8% · dd7cbc86
+image_to_model · running 15% · dd7cbc86
+image_to_model · running 25% · dd7cbc86
+image_to_model · running 39% · dd7cbc86
+image_to_model · running 59% · dd7cbc86
+image_to_model · success 100% · dd7cbc86
+✓ image_to_model · dd7cbc86-983c-474c-b973-d3873fe9135d · 110 credits
+downloading artifacts…
+✓ artifacts saved to art/tripo/censer/tripo-out/censer-dd7cbc86

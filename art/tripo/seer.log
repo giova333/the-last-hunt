@@ -1,0 +1,37 @@
+── Plan ──────────────────────────
+input: ./art/refs/seer_front.png ./art/refs/seer_back.png
+model: P2-20260801 — explicit --model
+steps:
+  1. multiview-to-model  POST /v3/generation/multiview-to-model — generate a 3D model from multiple views
+     face_limit=20000 pbr=false model="P2-20260801"
+  2. rig-check  POST /v3/animations/rig-check — check riggability (no model output; stops the chain if not riggable)
+  3. rig  POST /v3/animations/rig — auto-rig a skeleton (model selected after rig-check: quadruped uses v2.5-20260210; otherwise v3.0-20260909)
+deliverables: GLB
+cost impact:
+  · estimated generation cost: 110 credits (official list price; chain steps not estimated)
+──────────────────────────────────
+model: P2-20260801 (explicit --model)
+task created 14f75f07-10c7-453e-8f1b-530c5e330f85 (@seer)
+multiview_to_model · queued
+multiview_to_model · running 8% · 14f75f07
+multiview_to_model · running 13% · 14f75f07
+multiview_to_model · running 22% · 14f75f07
+multiview_to_model · running 35% · 14f75f07
+multiview_to_model · running 52% · 14f75f07
+multiview_to_model · running 79% · 14f75f07
+multiview_to_model · success 100% · 14f75f07
+✓ multiview_to_model · 14f75f07-10c7-453e-8f1b-530c5e330f85 · 110 credits
+task created 4df2a905-ee75-45fe-9acc-5d59d25107a1 (@seer-rig-check)
+animate_prerigcheck · queued
+✓ animate_prerigcheck · 4df2a905-ee75-45fe-9acc-5d59d25107a1 · 0 credits
+downloading artifacts…
+✓ artifacts saved to art/tripo/seer/tripo-out/seer-rig-check-4df2a905
+using rig-check recommendation: biped
+task created aaae00fb-5e64-43e7-9e77-f954a1cef855 (@seer-rig)
+animate_rig · queued
+animate_rig · running 66% · aaae00fb
+animate_rig · running 99% · aaae00fb
+animate_rig · success 100% · aaae00fb
+✓ animate_rig · aaae00fb-5e64-43e7-9e77-f954a1cef855 · 25 credits
+downloading artifacts…
+✓ artifacts saved to art/tripo/seer/tripo-out/seer-rig-aaae00fb

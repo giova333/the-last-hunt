@@ -1,0 +1,36 @@
+── Plan ──────────────────────────
+input: ./art/refs/hunter_front.png ./art/refs/hunter_back.png
+model: P2-20260801 — explicit --model
+steps:
+  1. multiview-to-model  POST /v3/generation/multiview-to-model — generate a 3D model from multiple views
+     face_limit=20000 pbr=false model="P2-20260801"
+  2. rig-check  POST /v3/animations/rig-check — check riggability (no model output; stops the chain if not riggable)
+  3. rig  POST /v3/animations/rig — auto-rig a skeleton (model selected after rig-check: quadruped uses v2.5-20260210; otherwise v3.0-20260909)
+deliverables: GLB
+cost impact:
+  · estimated generation cost: 110 credits (official list price; chain steps not estimated)
+──────────────────────────────────
+model: P2-20260801 (explicit --model)
+task created 1c3dc358-5c64-4c46-8c9a-e99c50f7d863 (@hunter)
+multiview_to_model · queued
+multiview_to_model · running 8% · 1c3dc358
+multiview_to_model · running 13% · 1c3dc358
+multiview_to_model · running 22% · 1c3dc358
+multiview_to_model · running 35% · 1c3dc358
+multiview_to_model · running 52% · 1c3dc358
+multiview_to_model · running 78% · 1c3dc358
+multiview_to_model · success 100% · 1c3dc358
+✓ multiview_to_model · 1c3dc358-5c64-4c46-8c9a-e99c50f7d863 · 110 credits
+task created d6f669a3-56d0-48ed-bbc3-0afb00f5013a (@hunter-rig-check)
+animate_prerigcheck · queued
+✓ animate_prerigcheck · d6f669a3-56d0-48ed-bbc3-0afb00f5013a · 0 credits
+downloading artifacts…
+✓ artifacts saved to art/tripo/hunter/tripo-out/hunter-rig-check-d6f669a3
+using rig-check recommendation: biped
+task created 53e54a75-a0ce-4ba3-bf53-b92852f016f2 (@hunter-rig)
+animate_rig · queued
+animate_rig · running 76% · 53e54a75
+animate_rig · success 100% · 53e54a75
+✓ animate_rig · 53e54a75-a0ce-4ba3-bf53-b92852f016f2 · 25 credits
+downloading artifacts…
+✓ artifacts saved to art/tripo/hunter/tripo-out/hunter-rig-53e54a75

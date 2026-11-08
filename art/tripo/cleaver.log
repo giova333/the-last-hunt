@@ -1,0 +1,22 @@
+── Plan ──────────────────────────
+input: ./art/refs/cleaver.png
+model: P2-20260801 — explicit --model
+steps:
+  1. image-to-model  POST /v3/generation/image-to-model — generate a 3D model from one image
+     face_limit=6000 pbr=false model="P2-20260801"
+deliverables: GLB
+cost impact:
+  · estimated generation cost: 110 credits (official list price)
+──────────────────────────────────
+model: P2-20260801 (explicit --model)
+task created d7d57440-4f90-4fee-bed7-c4d4be6ae83f (@cleaver)
+image_to_model · queued
+image_to_model · running 9% · d7d57440
+image_to_model · running 16% · d7d57440
+image_to_model · running 26% · d7d57440
+image_to_model · running 40% · d7d57440
+image_to_model · running 61% · d7d57440
+image_to_model · success 100% · d7d57440
+✓ image_to_model · d7d57440-4f90-4fee-bed7-c4d4be6ae83f · 110 credits
+downloading artifacts…
+✓ artifacts saved to art/tripo/cleaver/tripo-out/cleaver-d7d57440
