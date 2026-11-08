@@ -2,10 +2,13 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
   <title>The Last Hunt</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700&family=EB+Garamond:ital@0;1&display=swap" rel="stylesheet" />
+  <link rel="icon" href="data:," />
   <link rel="stylesheet" href="/src/style.css" />
 </head>
 <body>
@@ -26,7 +29,7 @@
       <div class="name">The Hound of Saint Orlan<span class="dmg"></span></div>
       <div class="bar boss-hp"><div class="trail"></div><div class="fill"></div></div>
     </div>
-    <div id="note" class="hidden"><div class="note-body"></div><div class="note-hint">E — close</div></div>
+    <div id="note" class="hidden"><div class="note-body"></div><div class="note-hint">E / Use — close</div></div>
     <div id="vignette"></div>
     <div id="poison"></div>
   </div>
@@ -35,7 +38,12 @@
     <h1>The Last Hunt</h1>
     <p class="sub">Veyr · Saint Orlan's Ward</p>
     <button id="start" disabled>Begin the Hunt</button>
-    <div class="controls">
+    <div class="controls touch-controls">
+      <div><b>Left thumb</b> move (push to the edge to sprint) · <b>right thumb</b> drag to look</div>
+      <div><b>Slash</b> · <b>Heavy</b> · <b>Roll</b> · <b>Vial</b> · <b>Lock</b> · <b>Use</b> buttons on the right</div>
+      <div>Best played in landscape</div>
+    </div>
+    <div class="controls desktop-controls">
       <div><b>WASD</b> move · <b>Shift</b> sprint · <b>Space</b> roll</div>
       <div><b>LMB</b> slash · <b>RMB</b> heavy · <b>Q / MMB</b> lock-on</div>
       <div><b>R</b> blood vial · <b>E</b> interact · <b>Esc</b> pause</div>
@@ -44,7 +52,7 @@
   </div>
 
   <div id="banner" class="screen hidden"><h2></h2><p></p></div>
-  <div id="pause" class="screen hidden"><h2>Paused</h2><p>Click to resume</p></div>
+  <div id="pause" class="screen hidden"><h2>Paused</h2><p>Click or tap to resume</p></div>
 
   <script type="module" src="/src/main.js"></script>
 </body>

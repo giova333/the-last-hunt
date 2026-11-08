@@ -81,7 +81,7 @@ export class UI {
       this.trackDamage(this.bossUi, boss.hp, performance.now());
     }
     if (p.lock && !p.lock.dead) {
-      this.v.copy(p.lock.pos).setY(p.lock.pos.y + (p.lock.radius > 1 ? 2.4 : 1.3)).project(camera);
+      this.v.copy(p.lock.pos).setY(p.lock.pos.y + (p.lock.radius > 1 ? 3.3 : 1.3)).project(camera);
       this.lock.style.display = 'block';
       this.lock.style.left = `${(this.v.x * 0.5 + 0.5) * innerWidth}px`;
       this.lock.style.top = `${(-this.v.y * 0.5 + 0.5) * innerHeight}px`;
@@ -89,6 +89,7 @@ export class UI {
   }
 
   setPrompt(text) {
+    if (text && document.body.classList.contains('touch')) text = text.replace('<b>E</b>', '<b>Use</b>');
     if (text) this.prompt.innerHTML = text;
     this.prompt.classList.toggle('on', !!text);
   }

@@ -8,6 +8,13 @@ npm run dev        # http://localhost:5173
 npm run build      # static build in dist/
 ```
 
+## Deploy (GitHub Pages)
+The build is a static site with relative paths (`vite.config.js` → `base: './'`), so it works from any sub-path.
+1. Push this repo to GitHub (branch `main`).
+2. Repo **Settings → Pages → Build and deployment → Source: GitHub Actions** (one time).
+3. Every push to `main` runs `.github/workflows/deploy.yml` (`npm ci && npm run build`, publishes `dist/`).
+   The game appears at `https://<user>.github.io/<repo>/`. It can also be run manually from the Actions tab.
+
 ## Controls
 | | |
 |---|---|
@@ -18,6 +25,8 @@ npm run build      # static build in dist/
 | R | blood vial (heal, cures plague) |
 | E | interact: lanterns, notes, fog gate |
 | Esc | pause |
+
+**Phone / tablet** (touch detected automatically; force with `?touch=1` or `?touch=0`): left thumb = floating joystick (push to the rim to sprint), right thumb = drag to look, on-screen **Slash · Heavy · Roll · Vial · Lock · Use** buttons and a pause button. Best in landscape; the game requests fullscreen + landscape where the browser allows it.
 
 **Mechanics:** stamina, lock-on, poise and stagger, *blood reclaim* (damage you take can be won back by striking within 4 s), plague pools, lantern checkpoints (resting resets enemies), and a two-phase boss (roar at 50% → faster, with a charge and a frenzy combo).
 
@@ -32,6 +41,9 @@ Concept art (`images/`) → cropped views (`art/refs/`) → **Tripo** → **Blen
 | Merge clips, JPEG/downscale textures | Blender | `Blender -b --python tools/build_character.py -- out.glb 2048 anim.glb [extra.glb]` |
 | Orient prop, grip at origin | Blender | `Blender -b --python tools/build_prop.py -- in.glb out.glb 1024 0.12 0 preview.png` |
 | Environment props (text → 3D) | Tripo P2 + Blender | `tripo generate text-to-model "…" -p face_limit=10000`, then `Blender -b --python tools/build_env.py -- model.glb public/models/env/name.glb 1024 preview.png` (script: `tools/gen_env_props.sh`) |
+| Small set-dressing props | Tripo H3.1 (~30 cr) + Blender | `tools/gen_detail_props.sh`, then `tools/build_env.py` |
+| Arena kit / hero props | Tripo P2 (~110 cr) + Blender | `tools/gen_arena_props.sh` |
+| Music + SFX | ElevenLabs | `node tools/gen_audio.mjs [sfx|music]` (key in git-ignored `.env.local`; resumable) |
 | Inspect / contact-sheet clips | Blender, node | `tools/inspect_glb.py`, `tools/contact_sheet.py`, `tools/montage.py`, `tools/motion_energy.mjs` |
 
 Tripo's preset `slash` is a 6.4 s combo and `hurt` is long. `src/assets.js` (`CLIP_TRIM`) trims them in-engine, keeping every bone track: slash keeps the first overhead chop (1.0–2.7 s, impact at 66%), with the root bone's twist frozen so attackers keep facing their target.

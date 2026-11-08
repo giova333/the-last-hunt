@@ -4,3 +4,4 @@ art/tripo/*/
 .DS_Store
 *.iml
 .idea
+.env*

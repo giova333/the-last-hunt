@@ -2,12 +2,11 @@ import * as THREE from 'three';
 import { Actor, angleDiff } from './actor.js';
 import { makeProp, ATTACK_IMPACT } from './assets.js';
 
-// Plague Seer: erratic stalker. Censer swing at close range; some hurl plague vials.
+// Plague Seer: erratic stalker. Melee only: a censer swing at close range.
 export class Seer extends Actor {
-  constructor(game, spawn, { thrower = false, dormant = false } = {}) {
+  constructor(game, spawn, { dormant = false } = {}) {
     super(game, 'seer', { radius: 0.5, hp: 95 });
     this.spawn = spawn;
-    this.thrower = thrower;
     this.dormant = dormant;
     this.weapon = makeProp('censer');
     this.model.attach(this.weapon, 'R_Hand', { rot: [Math.PI / 2, 0, Math.PI / 2], offset: [0, 0.05, 0] });
@@ -19,7 +18,7 @@ export class Seer extends Actor {
     this.game.world.move(this.pos, this.pos.x, this.pos.z, this.radius);
     this.yaw = this.spawn.yaw ?? Math.PI;
     this.hp = this.maxHp; this.dead = false; this.root.visible = true;
-    this.aggro = false; this.poiseDmg = 0; this.throwCd = 1.5 + Math.random() * 2;
+    this.aggro = false; this.poiseDmg = 0;
     this.jitter = Math.random() * 10;
     this.knock.set(0, 0, 0);
     this.root.position.y = 0;
@@ -33,7 +32,7 @@ export class Seer extends Actor {
     this.aggro = true;
     const away = this.pos.clone().sub(from.pos).setY(0).normalize();
     g.fx.blood(this.chest(1.3), away, 1);
-    g.audio.hit();
+    g.audio.hit(this.pos);
     from.onDealtDamage?.(dmg);
     if (this.hp <= 0) { this.die(); return true; }
     this.poiseDmg += poise;
@@ -64,7 +63,7 @@ export class Seer extends Actor {
     const sees = d < (this.dormant ? 5 : 13) && Math.abs(player.pos.y - this.pos.y) < 3;
     if (!this.aggro && sees && !player.dead) {
       this.aggro = true;
-      this.game.audio.screech();
+      this.game.audio.screech(this.pos);
       this.dormant = false;
     }
     if (player.dead && this.aggro) { this.aggro = false; }
@@ -80,13 +79,9 @@ export class Seer extends Actor {
         }
         const target = this.yawTo(player);
         this.turnTo(target, 5, dt);
-        this.throwCd -= dt;
         if (d < 2.3 && Math.abs(angleDiff(target, this.yaw)) < 0.5) {
           this.setState('attack', 'attack', { duration: 1.45, restart: true });
           this.swung = false;
-        } else if (this.thrower && d > 4.5 && d < 13 && this.throwCd <= 0) {
-          this.setState('throw', 'attack', { duration: 1.1, restart: true });
-          this.thrown = false;
         } else {
           // Erratic approach: lurch forward with a side-to-side weave.
           const weave = Math.sin(this.stateT * 2.4 + this.jitter) * 0.8;
@@ -102,19 +97,9 @@ export class Seer extends Actor {
         const k = this.stateT / 1.45;
         if (k < 0.45) this.turnTo(this.yawTo(player), 4, dt);
         if (k > 0.4 && k < ATTACK_IMPACT) this.walk(this.forward.x * 2.2 * dt, this.forward.z * 2.2 * dt);
-        if (!this.swung && k > ATTACK_IMPACT - 0.07) { this.swung = true; this.game.audio.swing(true); }
+        if (!this.swung && k > ATTACK_IMPACT - 0.07) { this.swung = true; this.game.audio.censer(this.pos); }
         if (k >= ATTACK_IMPACT - 0.03 && k < ATTACK_IMPACT + 0.08) this.melee([player], { range: 2.3, arc: 110, damage: 22, knock: 3 });
         if (this.stateT >= 1.45) this.setState('idle');
-        break;
-      }
-      case 'throw': {
-        this.turnTo(this.yawTo(player), 6, dt);
-        if (!this.thrown && this.stateT > 1.1 * ATTACK_IMPACT) {
-          this.thrown = true;
-          this.throwCd = 3.5 + Math.random() * 2;
-          this.game.throwVial(this.chest(1.9), player);
-        }
-        if (this.stateT >= 1.1) this.setState('idle');
         break;
       }
       case 'hurt':

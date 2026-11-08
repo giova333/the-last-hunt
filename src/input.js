@@ -7,6 +7,8 @@ export class Input {
     this.mouseDX = 0;
     this.mouseDY = 0;
     this.locked = false;
+    this.axis = { x: 0, y: 0 };   // analog move from the touch joystick (x = right, y = forward)
+    this.touch = false;           // set by main when on a touch device: no pointer lock needed
 
     addEventListener('keydown', (e) => {
       if (e.repeat) return;
@@ -18,7 +20,7 @@ export class Input {
     addEventListener('blur', () => this.keys.clear());
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     addEventListener('mousedown', (e) => {
-      if (!this.locked) return;
+      if (!this.locked || this.touch) return;
       const code = ['Mouse0', 'Mouse1', 'Mouse2'][e.button];
       this.keys.add(code);
       this.pressed.add(code);
@@ -30,12 +32,13 @@ export class Input {
       this.mouseDY += e.movementY;
     });
     document.addEventListener('pointerlockchange', () => {
+      if (this.touch) return;
       this.locked = document.pointerLockElement === canvas;
       if (!this.locked) this.keys.clear();
     });
   }
 
-  lock() { this.canvas.requestPointerLock?.(); }
+  lock() { if (this.touch) this.locked = true; else this.canvas.requestPointerLock?.(); }
   down(code) { return this.keys.has(code); }
   hit(...codes) { return codes.some((c) => this.pressed.has(c)); }
 

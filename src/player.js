@@ -66,6 +66,12 @@ export class Player extends Actor {
     return this.state === 'hurt' && this.stateT > 0.35;
   }
 
+  // Lunge stance for attacks: legs held in the run clip's widest stride.
+  stance() {
+    if (this.model.strideT !== undefined) this.model.hold('run', this.model.strideT, 0.1);
+    else this.model.play('idle', { fade: 0.12 });
+  }
+
   // Soft aim: without a lock, turn toward the closest enemy roughly in front (within 4 m).
   aimYaw(lockYaw, want) {
     if (lockYaw !== null) return lockYaw;
@@ -142,8 +148,8 @@ export class Player extends Actor {
     if (this.lock && (this.lock.dead || this.dist(this.lock) > (this.lock.radius > 1 ? 40 : 24))) this.lock = null;
 
     // Movement intent relative to camera.
-    const f = (inp.down('KeyW') ? 1 : 0) - (inp.down('KeyS') ? 1 : 0);
-    const s = (inp.down('KeyD') ? 1 : 0) - (inp.down('KeyA') ? 1 : 0);
+    const f = (inp.down('KeyW') ? 1 : 0) - (inp.down('KeyS') ? 1 : 0) + inp.axis.y;
+    const s = (inp.down('KeyD') ? 1 : 0) - (inp.down('KeyA') ? 1 : 0) + inp.axis.x;
     const cy = g.cam.yaw;
     const dir = new THREE.Vector3(Math.sin(cy) * f - Math.cos(cy) * s, 0, Math.cos(cy) * f + Math.sin(cy) * s);
     this.moving = dir.lengthSq() > 0;
@@ -166,19 +172,23 @@ export class Player extends Actor {
       } else if (q === 'light' && this.stamina > 1) {
         this.spend(T.light.stamina);
         this.yaw = this.aimYaw(lockYaw, this.moving ? Math.atan2(dir.x, dir.z) : this.yaw);
+        // Combo: forehand → backhand → sweep, if chained within the window.
         const chained = this.state === 'attack' || performance.now() / 1000 - this.lastAttackEnd < 0.45;
-        this.cut = chained && this.cut === 'fore' ? 'back' : 'fore';
-        this.setState('attack', 'idle', { fade: 0.12 });
+        this.cut = chained ? { fore: 'back', back: 'sweep', sweep: 'fore', heavy: 'fore' }[this.cut] : 'fore';
+        this.setState('attack', null);
+        this.stance();
         this.swung = false;
       } else if (q === 'heavy' && this.stamina > 1) {
         this.spend(T.heavy.stamina);
         this.yaw = this.aimYaw(lockYaw, this.moving ? Math.atan2(dir.x, dir.z) : this.yaw);
         this.cut = 'heavy';
-        this.setState('heavy', 'idle', { fade: 0.12 });
+        this.setState('heavy', null);
+        this.stance();
         this.swung = false;
       } else if (q === 'heal' && this.vials > 0 && this.hp < this.maxHp) {
         this.vials--;
         this.setState('heal', 'idle');
+        g.audio.drink();
         this.healed = false;
       }
     }
@@ -257,8 +267,10 @@ export class Player extends Actor {
     this.sync(dt);
     // Procedural cut on top of the base pose (also ages the blade trail).
     const atk = this.state === 'attack' || this.state === 'heavy';
+    if (this.state === 'roll') this.sword.reset();   // the roll drives the body; no fade-out
     this.sword.apply(atk ? this.cut : null, atk ? this.stateT / (this.state === 'heavy' ? T.heavy : T.light).time : 0, dt);
     this.drink.apply(this.state === 'heal' ? Math.min(1, this.stateT / T.healTime) : null);
+    if (!atk && this.state !== 'roll' && this.sword.lastW === 0) this.model.root.position.y = 0;   // clear the cut's hip drop once released
   }
 }
 

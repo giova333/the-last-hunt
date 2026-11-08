@@ -1,25 +1,17 @@
-// Fully synthesized audio: no sound files needed.
-export class Audio {
+// Synthesized fallback sounds (used when a recorded sample is missing).
+export class SynthAudio {
   constructor() {
     this.ctx = null;
   }
 
-  init() {
-    if (this.ctx) return;
-    this.ctx = new AudioContext();
-    this.master = this.ctx.createGain();
-    this.master.gain.value = 0.7;
-    this.master.connect(this.ctx.destination);
-    this.sfx = this.ctx.createGain();
-    this.sfx.connect(this.master);
-    this.musicBus = this.ctx.createGain();
-    this.musicBus.gain.value = 0;
-    this.musicBus.connect(this.master);
+  // Shares the context and buses of the sample engine.
+  attach(ctx, sfxBus, musicBus, master, { ambience = true, music = true } = {}) {
+    this.ctx = ctx; this.sfx = sfxBus; this.musicBus = musicBus; this.master = master;
     this.noiseBuf = this.ctx.createBuffer(1, this.ctx.sampleRate * 2, this.ctx.sampleRate);
     const d = this.noiseBuf.getChannelData(0);
     for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
-    this.startAmbience();
-    this.startMusic();
+    if (ambience) this.startAmbience();
+    if (music) this.startMusic();
   }
 
   get t() { return this.ctx.currentTime; }
@@ -129,4 +121,168 @@ export class Audio {
     this.musicBus.gain.cancelScheduledValues(this.t);
     this.musicBus.gain.setTargetAtTime(on ? 0.6 : 0, this.t, on ? 0.8 : 1.5);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Sample engine: recorded/generated SFX + music (public/audio, see tools/gen_audio.mjs).
+// Same API as before (swing(), hit(), roar()… setMusic()), plus optional world positions
+// for 3D sound. Anything without a sample falls back to the synthesized version.
+export class Audio {
+  constructor() {
+    this.ctx = null;
+    this.buffers = {};     // base name → [AudioBuffer…] (variants)
+    this.synth = new SynthAudio();
+    this.layers = {};      // music layer → { gain, src }
+  }
+
+  async init() {
+    if (this.ctx) return;
+    const ctx = (this.ctx = new AudioContext());
+    this.master = ctx.createGain(); this.master.gain.value = 0.85;
+    // Gentle bus compression keeps big hits from clipping.
+    const comp = ctx.createDynamicsCompressor(); comp.threshold.value = -14; comp.ratio.value = 3; comp.attack.value = 0.005; comp.release.value = 0.2;
+    this.master.connect(comp).connect(ctx.destination);
+    this.sfx = ctx.createGain(); this.sfx.connect(this.master);
+    this.music = ctx.createGain(); this.music.gain.value = 0.5; this.music.connect(this.master);
+    this.duck = ctx.createGain(); this.duck.connect(this.music);
+    // Cathedral reverb: a synthetic decaying impulse response, fed by a send.
+    this.reverb = ctx.createConvolver(); this.reverb.buffer = this.impulse(3.2, 2.6);
+    this.verbSend = ctx.createGain(); this.verbSend.gain.value = 0.22;
+    this.verbSend.connect(this.reverb).connect(this.master);
+    this.sfx.connect(this.verbSend);
+    // Synth fallback shares the buses; its drone "music" only runs if no music files exist.
+    this.synthMusic = ctx.createGain(); this.synthMusic.connect(this.duck);
+    try {
+      const m = await (await fetch('audio/manifest.json')).json();
+      await Promise.all([...m.sfx.map((f) => this.load('sfx', f)), ...m.music.map((f) => this.load('music', f))]);
+    } catch { /* no generated audio yet */ }
+    this.synth.attach(ctx, this.sfx, this.synthMusic, this.master, { ambience: !this.has('ambience'), music: !this.has('boss1') });
+    if (this.has('ambience')) this.loop('ambience', this.sfx, 0.35);
+    this.startMusicLayers();
+  }
+
+  async load(kind, file) {
+    const buf = await this.ctx.decodeAudioData(await (await fetch(`audio/${kind}/${file}`)).arrayBuffer());
+    const base = file.replace(/\.mp3$/, '').replace(/_\d+$/, '');
+    (this.buffers[base] ??= []).push(buf);
+  }
+
+  has(name) { return !!this.buffers[name]?.length; }
+  get t() { return this.ctx.currentTime; }
+
+  impulse(sec, decay) {
+    const ctx = this.ctx, n = Math.floor(ctx.sampleRate * sec), b = ctx.createBuffer(2, n, ctx.sampleRate);
+    for (let c = 0; c < 2; c++) { const d = b.getChannelData(c); for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / n, decay); }
+    return b;
+  }
+
+  // Listener follows the camera (call every frame).
+  setListener(camera) {
+    if (!this.ctx) return;
+    const L = this.ctx.listener, p = camera.position, t = this.t;
+    const f = camera.getWorldDirection(this._f ??= camera.position.clone());
+    if (L.positionX) {
+      L.positionX.setTargetAtTime(p.x, t, 0.02); L.positionY.setTargetAtTime(p.y, t, 0.02); L.positionZ.setTargetAtTime(p.z, t, 0.02);
+      L.forwardX.setTargetAtTime(f.x, t, 0.02); L.forwardY.setTargetAtTime(f.y, t, 0.02); L.forwardZ.setTargetAtTime(f.z, t, 0.02);
+      L.upX.value = 0; L.upY.value = 1; L.upZ.value = 0;
+    } else { L.setPosition(p.x, p.y, p.z); L.setOrientation(f.x, f.y, f.z, 0, 1, 0); }
+  }
+
+  // More reverb inside the cathedral courtyard.
+  setReverb(level) { if (this.ctx) this.verbSend.gain.setTargetAtTime(level, this.t, 0.8); }
+
+  // Play a sample by base name. at: world position (3D) or null (2D); vol, rate jitter.
+  play(name, { at = null, vol = 1, rate = 1, jitter = 0.06, ref = 6 } = {}) {
+    if (!this.ctx || !this.has(name)) return false;
+    const list = this.buffers[name];
+    // Avoid repeating the same variant twice in a row.
+    let i = Math.floor(Math.random() * list.length);
+    if (list.length > 1 && i === this.last?.[name]) i = (i + 1) % list.length;
+    (this.last ??= {})[name] = i;
+    const src = this.ctx.createBufferSource();
+    src.buffer = list[i];
+    src.playbackRate.value = rate * (1 + (Math.random() * 2 - 1) * jitter);
+    const g = this.ctx.createGain(); g.gain.value = vol * (1 + (Math.random() * 2 - 1) * 0.08);
+    let out = g;
+    if (at) {
+      const p = this.ctx.createPanner();
+      p.panningModel = 'HRTF'; p.distanceModel = 'inverse'; p.refDistance = ref; p.rolloffFactor = 1.1; p.maxDistance = 80;
+      if (p.positionX) { p.positionX.value = at.x; p.positionY.value = at.y + 1.2; p.positionZ.value = at.z; } else p.setPosition(at.x, at.y + 1.2, at.z);
+      g.connect(p); out = p;
+    }
+    src.connect(g); out.connect(this.sfx);
+    src.start();
+    return true;
+  }
+
+  loop(name, bus, vol, offset = 0) {
+    const src = this.ctx.createBufferSource(); src.buffer = this.buffers[name][0]; src.loop = true;
+    const g = this.ctx.createGain(); g.gain.value = vol;
+    src.connect(g).connect(bus); src.start(0, offset);   // later loops restart from 0
+    return { src, g };
+  }
+
+  // Briefly dip the music so a big impact lands.
+  duckMusic(amount = 0.45, sec = 0.5) {
+    if (!this.ctx) return;
+    const g = this.duck.gain, t = this.t;
+    g.cancelScheduledValues(t); g.setValueAtTime(g.value, t);
+    g.linearRampToValueAtTime(amount, t + 0.03); g.setTargetAtTime(1, t + 0.08, sec);
+  }
+
+  // ---- music: explore / boss1 / boss2 layers, crossfaded ----
+  startMusicLayers() {
+    for (const n of ['explore', 'boss1', 'boss2']) {
+      if (!this.has(n)) continue;
+      const L = this.loop(n, this.duck, 0);
+      this.layers[n] = L;
+    }
+    this.mode = null;
+    this.setMusic(false);
+  }
+
+  setMusic(on, intense = false) {
+    if (!this.ctx) return;
+    if (!this.has('boss1')) return this.synth.setMusic(on, intense);
+    const mode = !on ? 'explore' : intense && this.has('boss2') ? 'boss2' : 'boss1';
+    if (mode === this.mode) return;
+    this.mode = mode;
+    const levels = { explore: 0.55, boss1: 0.9, boss2: 0.95 };
+    for (const [n, L] of Object.entries(this.layers)) {
+      // A boss layer restarts when it comes in, skipping its soft generated intro so the fight
+      // music hits with the Hound's roar (boss1 reaches full level ~3.5 s in, boss2 ~2 s).
+      const fresh = n === mode && n !== 'explore' && L.g.gain.value < 0.05;
+      if (fresh) {
+        L.src.stop(); const f = this.loop(n, this.duck, 0, { boss1: 3.5, boss2: 2 }[n]); L.src = f.src; L.g = f.g;
+        this.duck.gain.cancelScheduledValues(this.t); this.duck.gain.setValueAtTime(1, this.t);   // no leftover ducking
+      }
+      L.g.gain.cancelScheduledValues(this.t);
+      L.g.gain.setTargetAtTime(n === mode ? levels[n] : 0, this.t, n === mode ? (fresh ? 0.12 : 0.5) : (mode === 'explore' ? 1.2 : 0.4));
+    }
+  }
+
+  // ---- game events (same names as before; `at` = world position for 3D) ----
+  swing(heavy = false, at = null) { this.play(heavy ? 'swing_heavy' : 'swing_light', { at, vol: 0.8 }) || this.synth.swing(heavy); }
+  claw(at) { this.play('claw', { at, vol: 1, ref: 9 }) || this.synth.swing(true); }
+  censer(at) { this.play('censer', { at, vol: 0.8 }) || this.synth.swing(true); }
+  hit(at = null, heavy = false) {
+    if (!this.play(heavy ? 'hit_heavy' : 'hit_flesh', { at, vol: heavy ? 1 : 0.9 })) this.synth.hit();
+    if (heavy) this.duckMusic(0.6, 0.3);
+  }
+  // The hunter takes blows in silence: no voice, just the dull impact of the hit landing.
+  hurt() { this.play('hit_flesh', { vol: 0.55, rate: 0.75, jitter: 0.05 }); this.duckMusic(0.6, 0.3); }
+  roll() { this.play('roll', { vol: 0.6 }) || this.synth.roll(); }
+  step() { this.play('step', { vol: 0.35, jitter: 0.1 }) || this.synth.step(); }
+  stomp(at) { this.play('stomp', { at, vol: 0.9, ref: 10 }); }
+  drink() { this.play('drink', { vol: 0.8, jitter: 0.02 }); }
+  heal() { this.play('heal', { vol: 0.7, jitter: 0.02 }) || this.synth.heal(); }
+  shatter(at = null) { this.play('shatter', { at, vol: 0.8 }) || this.synth.shatter(); }
+  screech(at = null) { this.play('seer_screech', { at, vol: 0.9 }) || this.synth.screech(); }
+  // duck=false when the roar should ride on top of the music (the fight's opening roar).
+  roar(at = null, duck = true) { if (!this.play('roar', { at, vol: 1.2, ref: 14, jitter: 0.04 })) this.synth.roar(); if (duck) this.duckMusic(0.6, 0.5); }
+  slam(at = null) { if (!this.play('slam', { at, vol: 1.2, ref: 14 })) this.synth.slam(); this.duckMusic(0.4, 0.5); }
+  lantern() { this.play('lantern', { vol: 0.8, jitter: 0 }) || this.synth.lantern(); }
+  gate() { this.play('gate', { vol: 0.9, jitter: 0 }) || this.synth.gate(); }
+  death() { if (!this.play('death', { vol: 1, jitter: 0 })) this.synth.death(); this.duckMusic(0.15, 2.5); }
+  victory() { this.play('victory', { vol: 1, jitter: 0 }); }
 }

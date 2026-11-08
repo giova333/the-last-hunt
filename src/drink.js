@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { rotateWorld } from './swing.js';
+import { rotateWorld, ArmIK } from './swing.js';
 
 // Blood vial drinking: the left hand brings a glowing vial to the mouth, the head tips
 // back to drink, then the arm lowers. Two-bone IK on the left arm over the base pose.
@@ -38,6 +38,7 @@ export class Drink {
     actor.model.root.traverse((o) => { if (o.isBone) b[o.name] = o; });
     this.b = b;
     this.ok = !!(b.L_Upperarm && b.L_Forearm && b.L_Hand && b.Head);
+    if (this.ok) this.ik = new ArmIK(b.L_Upperarm, b.L_Forearm, b.L_Hand);
     this.vial = makeVial();
     actor.game.scene.add(this.vial);
   }
@@ -45,8 +46,9 @@ export class Drink {
   // k: 0..1 through the heal state, or null when not drinking.
   apply(k) {
     const vial = this.vial;
-    if (k === null || !this.ok) { vial.visible = false; vial.light.intensity = 0; return; }
+    if (k === null || !this.ok) { vial.visible = false; vial.light.intensity = 0; this.ik?.reset(); return; }
     const { L_Upperarm: up, L_Forearm: fo, L_Hand: hand, Head: head } = this.b;
+    this.actor.model.protect([up, fo, hand, head]);
     const root = this.actor.root;
     root.updateMatrixWorld(true);
     const rq = root.getWorldQuaternion(new THREE.Quaternion());
@@ -64,21 +66,10 @@ export class Drink {
     const hp = head.getWorldPosition(new THREE.Vector3());
     const chest = hp.clone().add(L(0.06, -0.42, 0.32));
     const mouth = hp.clone().add(L(0.0, -0.1, 0.16 - 0.04 * tip));
-    const a = up.getWorldPosition(new THREE.Vector3()), b0 = fo.getWorldPosition(new THREE.Vector3()), c0 = hand.getWorldPosition(new THREE.Vector3());
     const target = chest.lerp(mouth, toMouth);
-    target.lerpVectors(c0, target, w);
 
-    // Two-bone IK, elbow out to the left and down.
-    const lenA = a.distanceTo(b0), lenB = b0.distanceTo(c0), reach = lenA + lenB;
-    const d = Math.min(Math.max(a.distanceTo(target), Math.abs(lenA - lenB) + 1e-3), reach - 1e-3);
-    const toT = target.clone().sub(a).normalize();
-    const pole = L(0.7, -0.7, -0.1);
-    const pn = pole.addScaledVector(toT, -pole.dot(toT)).normalize();
-    const cosA = (lenA * lenA + d * d - lenB * lenB) / (2 * lenA * d);
-    const elbow = a.clone().addScaledVector(toT, lenA * cosA).addScaledVector(pn, lenA * Math.sqrt(Math.max(0, 1 - cosA * cosA)));
-    _q.setFromUnitVectors(b0.clone().sub(a).normalize(), elbow.sub(a).normalize()); rotateWorld(up, _q);
-    const b1 = fo.getWorldPosition(new THREE.Vector3()), c1 = hand.getWorldPosition(new THREE.Vector3());
-    _q.setFromUnitVectors(c1.clone().sub(b1).normalize(), target.clone().sub(b1).normalize()); rotateWorld(fo, _q);
+    // Two-bone IK, elbow out to the left and down (blended in by w).
+    this.ik.solve(target, L(0.7, -0.7, -0.1), w);
 
     // The vial sits in the hand: upright while raised, neck to the lips (bottom up) while drinking.
     hand.getWorldPosition(vial.position);

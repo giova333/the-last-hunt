@@ -14,6 +14,7 @@ import { Seer } from './seer.js';
 import { Boss } from './boss.js';
 import { ThirdPersonCamera } from './camera.js';
 import { UI } from './ui.js';
+import { TouchControls, isTouchDevice } from './touch.js';
 
 // Film grain + vignette + slight desaturation for the gothic look.
 const GradeShader = {
@@ -37,7 +38,9 @@ class Game {
   constructor() {
     const canvas = document.querySelector('#game');
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
-    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
+    this.isTouch = isTouchDevice();
+    // Phones: lower render resolution keeps the frame rate up.
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, this.isTouch ? 1.25 : 1.75));
     this.renderer.setSize(innerWidth, innerHeight);
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -64,6 +67,11 @@ class Game {
     });
 
     this.input = new Input(canvas);
+    this.input.touch = this.isTouch;
+    if (this.isTouch) {
+      document.body.classList.add('touch');
+      this.touch = new TouchControls(this.input, { onPause: () => { if (this.started && !this.paused) this.pause(); } });
+    }
     this.audio = new Audio();
     this.ui = new UI();
     this.clock = new THREE.Clock();
@@ -78,6 +86,7 @@ class Game {
   async init() {
     await loadAssets((k) => { document.querySelector('#loading').textContent = `Gathering the dead… ${Math.round(k * 100)}%`; });
     this.world = new World(this.scene);
+    if (this.isTouch) this.world.moon.shadow.mapSize.set(1024, 1024);
     // Image-based lighting from the night sky: wet stone and metal reflect the moon and clouds.
     const pmrem = new THREE.PMREMGenerator(this.renderer);
     const envScene = new THREE.Scene();
@@ -91,14 +100,14 @@ class Game {
     this.seers = [
       // Street
       new Seer(this, { x: 2.5, z: 19, yaw: Math.PI }),
-      new Seer(this, { x: -3, z: 31, yaw: Math.PI }, { thrower: true }),
+      new Seer(this, { x: -3, z: 31, yaw: Math.PI }),
       new Seer(this, { x: 3.8, z: 40, yaw: -Math.PI / 2 }, { dormant: true }),
       new Seer(this, { x: -1, z: 52, yaw: Math.PI }),
       // Plaza
-      new Seer(this, { x: 9, z: 68, yaw: -Math.PI / 2 }, { thrower: true }),
+      new Seer(this, { x: 9, z: 68, yaw: -Math.PI / 2 }),
       new Seer(this, { x: -8, z: 70, yaw: Math.PI / 2 }),
       new Seer(this, { x: -12, z: 79, yaw: Math.PI / 2 }, { dormant: true }),
-      new Seer(this, { x: 6, z: 84, yaw: Math.PI }, { thrower: true }),
+      new Seer(this, { x: 6, z: 84, yaw: Math.PI }),
     ];
     this.boss = new Boss(this);
     this.bossActive = false;
@@ -119,7 +128,7 @@ class Game {
     start.onclick = () => this.start();
     document.querySelector('#pause').onclick = () => this.resume();
     document.addEventListener('pointerlockchange', () => {
-      if (!this.input.locked && this.started && !this.ended) this.pause();
+      if (!this.isTouch && !this.input.locked && this.started && !this.ended) this.pause();
     });
     addEventListener('keydown', (e) => { if (e.code === 'Escape' && this.started && this.paused) this.resume(); });
     this.loop();
@@ -127,15 +136,20 @@ class Game {
 
   start() {
     this.audio.init();
+    if (this.isTouch) {
+      // Best effort: fullscreen + landscape (unsupported browsers simply ignore it).
+      try { document.documentElement.requestFullscreen?.({ navigationUI: 'hide' })?.then(() => screen.orientation?.lock?.('landscape')).catch(() => {}); } catch {}
+    }
     document.querySelector('#title').classList.add('hidden');
     document.querySelector('#hud').classList.remove('hidden');
     this.started = true;
     this.resume();
   }
-  pause() { this.paused = true; document.querySelector('#pause').classList.remove('hidden'); }
+  pause() { this.paused = true; document.querySelector('#pause').classList.remove('hidden'); this.touch?.show(false); }
   resume() {
     document.querySelector('#pause').classList.add('hidden');
     this.input.lock();
+    this.touch?.show(true);
     this.paused = false;
     this.clock.getDelta();
   }
@@ -166,18 +180,6 @@ class Game {
     m.rotation.x = -Math.PI / 2; m.position.copy(pos).setY(pos.y + 0.1);
     this.scene.add(m);
     this.waves.push({ m, t: 0, r });
-  }
-
-  throwVial(from, target) {
-    const m = new THREE.Mesh(new THREE.SphereGeometry(0.12, 8, 6), new THREE.MeshStandardMaterial({ color: 0x9acd32, emissive: 0x88cc22, emissiveIntensity: 1.5 }));
-    m.position.copy(from);
-    this.scene.add(m);
-    // Lead the target slightly, fixed flight time with a ballistic arc.
-    const T = 0.9;
-    const aim = target.pos.clone();
-    const v = aim.sub(from).divideScalar(T);
-    v.y += 0.5 * 14 * T;
-    this.projectiles.push({ m, v, life: 3 });
   }
 
   updateProjectiles(dt) {
@@ -234,6 +236,8 @@ class Game {
     this.player.echoes += 5000;
     this.player.lock = null;
     this.audio.setMusic(false);
+    this.audio.victory();
+    this.audio.setReverb(0.22);
     this.world.gateSealed = false;
     setTimeout(() => {
       this.ui.showBoss(false);
@@ -273,6 +277,7 @@ class Game {
       this.world.roseLight.color.set(0xff8030);
       this.ui.showBoss(false);
       this.audio.setMusic(false);
+      this.audio.setReverb(0.22);
     }
   }
 
@@ -339,6 +344,7 @@ class Game {
       p.setState('idle');
       this.ui.showBoss(true);
       this.audio.setMusic(true);
+      this.audio.setReverb(0.45);   // the courtyard rings like a nave
       this.boss.wake();
       p.lock = this.boss;
     }
@@ -400,6 +406,7 @@ class Game {
     this.world.update(dt, this.camera.position);
     this.world.followShadow(p.pos);
     this.cam.update(dt, p, frozen ? { mouseDX: 0, mouseDY: 0 } : this.input, heightAt);
+    this.audio.setListener(this.camera);
     this.ui.update(p, this.bossActive ? this.boss : null, this.camera);
     this.ui.enemyBars(this.seers, this.camera, p);
     this.checkAreas();

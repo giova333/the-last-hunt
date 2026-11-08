@@ -7,9 +7,9 @@ import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js
 // Character definitions. Each GLB is optional: if it is missing, a procedural
 // stand-in figure is used so the game is always playable.
 export const CHARACTERS = {
-  hunter: { url: '/models/hunter.glb', height: 1.85, color: 0x3a2a20, accent: 0x7a1414 },
-  seer: { url: '/models/seer.glb', height: 2.1, color: 0x4a3426, accent: 0x6a1c1c },
-  wolf: { url: '/models/wolf.glb', height: 4.2, color: 0x5a4c48, accent: 0x9a8a80 },
+  hunter: { url: 'models/hunter.glb', height: 1.85, color: 0x3a2a20, accent: 0x7a1414 },
+  seer: { url: 'models/seer.glb', height: 2.1, color: 0x4a3426, accent: 0x6a1c1c },
+  wolf: { url: 'models/wolf.glb', height: 5.8, color: 0x5a4c48, accent: 0x9a8a80 },
 };
 
 // Keywords used to map whatever clip names a GLB carries onto game states.
@@ -20,13 +20,14 @@ const CLIP_KEYS = {
   attack: ['attack', 'slash'],
   hurt: ['hurt', 'hit'],
   death: ['death', 'fall', 'die'],
+  leap: ['dive'],
 };
 
 // Tripo's preset clips are long; these windows (seconds) hold the useful motion.
 // slash (a 6.4s sword combo): we keep only the first overhead chop — wind-up from 1.0s,
 // blade lands ≈2.15s, recovered by 2.7s. Its root bone twists the body ~90° away from
 // the target, so `lockRoot` freezes it and the hunter stays facing what he swings at.
-const CLIP_TRIM = { slash: [1.0, 2.7, { lockRoot: true }], hurt: [0.0, 1.2] };
+const CLIP_TRIM = { slash: [1.0, 2.7, { lockRoot: true }], hurt: [0.0, 1.2], dive: [0.35, 1.4] };   // dive: crouch → pounce (cut before its somersault)
 export const ATTACK_IMPACT = 0.66;
 
 const loaded = {};
@@ -80,8 +81,8 @@ export async function loadAssets(onProgress) {
 
 // Hand-held props. Blender pre-processed them: unit length, long axis +Y, origin at the grip.
 export const PROPS = {
-  cleaver: { url: '/models/cleaver.glb', length: 1.15 },
-  censer: { url: '/models/censer.glb', length: 1.5 },
+  cleaver: { url: 'models/cleaver.glb', length: 1.15 },
+  censer: { url: 'models/censer.glb', length: 1.5 },
 };
 
 export function makeProp(name) {
@@ -99,7 +100,7 @@ export function hasModel(name) { return !!loaded[name]; }
 
 // Environment props (Tripo text-to-model → tools/build_env.py: origin at the base, unit size).
 // Tripo's models face +X; makeEnv() turns them to face +Z and scales them to a height in metres.
-export const ENV = Object.fromEntries(['statue', 'lamp', 'doorway', 'balustrade', 'cart', 'cage', 'tree', 'coffins'].map((n) => [n, { url: `/models/env/${n}.glb` }]));
+export const ENV = Object.fromEntries(['statue', 'lamp', 'doorway', 'balustrade', 'cart', 'cage', 'tree', 'coffins', 'pillar', 'brazier', 'archway', 'fountain', 'gate', 'shrine', 'cathedral', 'torch', 'candelabra', 'chandelier', 'barrels', 'crates', 'bones', 'tombstone', 'corpse', 'gargoyle', 'fence'].map((n) => [n, { url: `models/env/${n}.glb` }]));
 const envPrepared = new Set();
 export function makeEnv(name, height) {
   const gltf = loaded[name];
@@ -129,6 +130,7 @@ export class CharacterModel {
     this.current = null;
     this.actions = {};
     this.time = 0;
+    this.restore = new Map();
     if (loaded[name]) this.buildFromGLTF(loaded[name], def);
     else this.buildFallback(name, def);
   }
@@ -175,7 +177,7 @@ export class CharacterModel {
     // Fill gaps so play() never fails.
     const any = this.actions.idle || Object.values(this.actions)[0];
     for (const s of Object.keys(CLIP_KEYS)) if (!this.actions[s] && any) this.actions[s] = this.actions[s === 'run' ? 'walk' : 'idle'] || any;
-    for (const s of ['attack', 'hurt', 'death']) {
+    for (const s of ['attack', 'hurt', 'death', 'leap']) {
       const a = this.actions[s];
       if (a && a !== this.actions.idle) { a.setLoop(THREE.LoopOnce); a.clampWhenFinished = true; }
     }
@@ -214,6 +216,20 @@ export class CharacterModel {
         ox += x / N; oz += z / N;
       }
       this.offsets.set(a, [ox, oz]);
+    }
+    // Widest stride of the run (right foot forward): used as the lunge stance for attacks.
+    const run = this.actions.run, { L_Foot, R_Foot } = bones;
+    if (run && L_Foot && R_Foot) {
+      let best = -1e9;
+      for (const b of all) b.stop();
+      run.reset().setEffectiveWeight(1).play();
+      for (let i = 0; i < 24; i++) {
+        run.time = (run.getClip().duration * i) / 24;
+        this.mixer.update(0);
+        this.root.updateMatrixWorld(true);
+        const dz = R_Foot.getWorldPosition(v).z - L_Foot.getWorldPosition(w).z;
+        if (dz > best) { best = dz; this.strideT = run.time; }
+      }
     }
     for (const b of all) b.stop();
     skeleton.pose();
@@ -268,11 +284,32 @@ export class CharacterModel {
     this.current = next;
   }
 
+  // Call before procedurally editing bones (after the mixer ran): they are restored next frame.
+  protect(bones) { for (const b of bones) if (b && !this.restore.has(b)) this.restore.set(b, b.quaternion.clone()); }
+
+  // Freeze a clip at time t (crossfading in): used to hold a pose, e.g. the lunge stance.
+  hold(state, t, fade = 0.12) {
+    const a = this.actions[state];
+    if (!this.mixer || !a) return;
+    this.state = state; this.stateTime = 0; this.stateDuration = null;
+    if (this.current !== a) {
+      a.reset(); a.enabled = true; a.setEffectiveWeight(1); a.play();
+      if (this.current) a.crossFadeFrom(this.current, fade, false);
+      this.current = a;
+    }
+    a.timeScale = 0;
+    a.time = t;
+  }
+
   setSpeed(scale) { if (this.current && !this.stateDuration) this.current.timeScale = scale; }
 
   update(dt) {
     this.time += dt;
     this.stateTime = (this.stateTime || 0) + dt;
+    // Undo last frame's procedural edits first: the mixer only rewrites a bone when its
+    // animated value changes, so on a held pose those edits would otherwise accumulate.
+    for (const [b, q] of this.restore) b.quaternion.copy(q);
+    this.restore.clear();
     if (this.mixer) { this.mixer.update(dt); if (this.offsets) this.applyOffsets(); }
     else this.animateFallback(dt);
   }

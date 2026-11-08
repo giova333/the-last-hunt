@@ -195,6 +195,47 @@ export class World {
     this.buildAsh();
     this.buildMist();
     this.buildLeaves();
+    this.buildDetails();
+  }
+
+  // Small Tripo set-dressing props (each call is a no-op if that model is missing).
+  buildDetails() {
+    const r = this.rand;
+    // Wall torches beside the doors of street houses, with flickering glows.
+    for (const [i, f] of (this.facades || []).entries()) {
+      if (f.z > 60 || f.z < -6 || i % 2) continue;
+      const side = Math.sign(f.x) || 1;                 // facade on the east (+) or west (−) side
+      const tz = f.z + (i % 4 === 0 ? 1 : -1) * Math.min(3.0, f.w * 0.37);
+      const m = this.prop('torch', 1.1, f.x - side * 0.2, tz, -side * Math.PI / 2, { y: 2.0 });
+      if (m) this.glow(f.x - side * 0.42, 3.0, tz, 0.85, 0xff9a40);
+    }
+    // Hanging chandeliers: inside the fog-gate arch and under the gatehouse, each with a real light.
+    for (const [x, yTop, z] of [[0, ARENA.y + 10.4, GATE_Z + 0.4], [0, 8.6, -11.5]]) {
+      const h = 2.8, m = this.prop('chandelier', h, x, z, 0, { y: yTop - h });
+      if (!m) continue;
+      for (let k = 0; k < 6; k++) { const a = (k / 6) * Math.PI * 2; this.glow(x + Math.cos(a) * 0.62, yTop - h + 0.42, z + Math.sin(a) * 0.62, 0.32); }
+      const l = new THREE.PointLight(0xffa050, 10, 14, 1.6); l.position.set(x, yTop - h + 0.3, z); this.add(l); this.flames.push(l);
+    }
+    // Candelabras: before the cathedral and beside the lantern shrines.
+    for (const [x, z, y] of [[-5.5, ARENA.z + 17.6, ARENA.y], [5.5, ARENA.z + 17.6, ARENA.y], [5.6, 1.0, 0], [-12.6, 87.8, 0]]) {
+      if (this.prop('candelabra', 1.9, x, z, r() * 6.28, { y, r: 0.35 })) this.glow(x, y + 1.85, z, 0.6, 0xffb060);
+    }
+    // The Hound's lair: skull piles around the arena edge.
+    for (let k = 0; k < 7; k++) {
+      const a = (k / 7) * Math.PI * 2 + 0.4, rr = ARENA.r - 2.5 - r() * 2;
+      if (Math.abs(Math.sin(a) + 1) < 0.25) continue;   // keep the entrance clear
+      this.prop('bones', 0.7, ARENA.x + Math.cos(a) * rr, ARENA.z + Math.sin(a) * rr, r() * 6.28, { y: ARENA.y });
+    }
+    // Plague dead along the street and plaza.
+    for (const [x, z] of [[-2.8, 11], [3.4, 23], [-4.2, 37.5], [2.2, 50], [6.5, 66], [-5.5, 81]]) this.corpse(x, z, r() * 6.28);
+    // A small graveyard by the plaza's dead tree, fenced off from the square.
+    for (const [x, z] of [[-14.4, 59.6], [-12.4, 63.4], [-14.5, 65.2], [-11.4, 59.8], [-13.4, 67.3]]) this.prop('tombstone', 1.3, x, z, Math.PI / 2 + (r() - 0.5) * 0.4, { r: 0.4 });
+    if (this.balustrade(-10.3, 58.6, -10.3, 62, 0, 1.6, 'fence') && this.balustrade(-10.3, 64.2, -10.3, 68.6, 0, 1.6, 'fence')) {
+      for (let z = 58.8; z < 68.6; z += 0.9) if (z < 62 || z > 64.2) this.colliders.push({ x: -10.3, z, r: 0.35 });
+      this.balustrade(-10.3, 68.6, -15.4, 68.6, 0, 1.6, 'fence');
+    }
+    // Gargoyles crouched on the passage walls, watching the fog gate.
+    for (const s of [-1, 1]) for (const z of [97.5, 108]) this.prop('gargoyle', 1.6, s * 5.8, z, -s * Math.PI / 2, { y: ARENA.y + 7 });
   }
 
   // Low ground mist: layered noise planes that drift, fading near the camera so their
@@ -374,6 +415,7 @@ export class World {
     if (dw) { dw.position.set(0, 0, d / 2 + dw.userData.size.z / 2 - 0.25); g.add(dw); }
     else { const door = new THREE.Mesh(new THREE.BoxGeometry(1.2, 2.3, 0.2), this.mat.wood); door.position.set(0, 1.15, d / 2); g.add(door); }
     g.position.set(x, 0, z); g.rotation.y = face;
+    (this.facades ??= []).push({ x: x + Math.sin(face) * d / 2, z: z + Math.cos(face) * d / 2, w, face });
     this.add(g);
   }
 
@@ -403,13 +445,19 @@ export class World {
 
   brazier(x, z, light = true) {
     const y = heightAt(x, z);
-    const bowl = new THREE.Mesh(new THREE.CylinderGeometry(0.45, 0.2, 0.4, 8), this.mat.iron);
-    bowl.position.set(x, y + 1.1, z); bowl.castShadow = true; this.add(bowl);
-    const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.15, 0.9, 6), this.mat.iron);
-    leg.position.set(x, y + 0.45, z); this.add(leg);
+    // Carved pedestal brazier (Tripo) or a plain iron bowl on a leg.
+    const m = makeEnv('brazier', 2.2);
+    const top = m ? 2.05 : 1.3;
+    if (m) { m.position.set(x, y, z); m.rotation.y = Math.atan2(-x, -z + 0.001); this.add(m); }
+    else {
+      const bowl = new THREE.Mesh(new THREE.CylinderGeometry(0.45, 0.2, 0.4, 8), this.mat.iron);
+      bowl.position.set(x, y + 1.1, z); bowl.castShadow = true; this.add(bowl);
+      const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.15, 0.9, 6), this.mat.iron);
+      leg.position.set(x, y + 0.45, z); this.add(leg);
+    }
     const fire = new THREE.Mesh(new THREE.ConeGeometry(0.3, 0.7, 7), new THREE.MeshBasicMaterial({ color: 0xff7a20, transparent: true, opacity: 0.85 }));
-    fire.position.set(x, y + 1.6, z); this.add(fire); this.flames.push(fire);
-    if (light) { const l = new THREE.PointLight(0xff7a30, 12, 16, 1.5); l.position.set(x, y + 2, z); this.add(l); this.flames.push(l); }
+    fire.position.set(x, y + top + 0.3, z); this.add(fire); this.flames.push(fire);
+    if (light) { const l = new THREE.PointLight(0xff7a30, 12, 16, 1.5); l.position.set(x, y + top + 0.7, z); this.add(l); this.flames.push(l); }
     this.colliders.push({ x, z, r: 0.5 });
   }
 
@@ -454,6 +502,8 @@ export class World {
   clutter(x, z) {
     const y = heightAt(x, z);
     const r = this.rand();
+    if (r < 0.4 && this.prop('barrels', 1.15, x, z, this.rand() * 6.28, { r: 0.8 })) return;
+    if (r >= 0.4 && r < 0.7 && this.prop('crates', 1.4, x, z, this.rand() * 6.28, { r: 0.8 })) return;
     if (r < 0.4) { const b = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.3, 0.9, 10), this.mat.wood); b.position.set(x, y + 0.45, z); b.castShadow = true; this.add(b); this.colliders.push({ x, z, r: 0.4 }); }
     else if (r < 0.7) { this.box(0.9, 0.9, 0.9, this.mat.wood, x, y + 0.45, z, this.rand() * 3); this.colliders.push({ x, z, r: 0.6 }); }
     else if (makeEnv('coffins', 1)) { const m = makeEnv('coffins', 1.25); m.position.set(x, y, z); m.rotation.y = this.rand() * 6.28; this.add(m); this.colliders.push({ x, z, r: 1.1 }); }
@@ -474,6 +524,15 @@ export class World {
     this.cages ??= []; this.cages.push(m);
   }
 
+  // Candle-and-skull roadside shrine (Tripo); facing ry.
+  shrine(x, z, ry) {
+    const m = makeEnv('shrine', 2.4);
+    if (!m) return;
+    m.position.set(x, heightAt(x, z), z); m.rotation.y = ry; this.add(m);
+    const glow = new THREE.PointLight(0xffa050, 3, 4, 1.6); glow.position.set(x, heightAt(x, z) + 1.1, z); this.add(glow); this.flames.push(glow);
+    this.colliders.push({ x, z, r: 0.6 });
+  }
+
   tree(x, z, h = 9) {
     const m = makeEnv('tree', h);
     if (!m) return;
@@ -481,14 +540,49 @@ export class World {
     this.colliders.push({ x, z, r: 0.7 });
   }
 
+  // Place an environment prop if its model exists. Returns the object or null.
+  prop(name, h, x, z, ry = 0, { y = heightAt(x, z), r = 0 } = {}) {
+    const m = makeEnv(name, h);
+    if (!m) return null;
+    m.position.set(x, y, z); m.rotation.y = ry; this.add(m);
+    if (r) this.colliders.push({ x, z, r });
+    return m;
+  }
+
+  // Shrouded plague corpse. Tripo modelled it standing, so lay it on its back on the ground.
+  corpse(x, z, ry) {
+    const m = makeEnv('corpse', 1.75);
+    if (!m) return null;
+    const depth = m.userData.size.z;
+    m.rotation.x = -Math.PI / 2;               // feet at the origin, head toward −Z, front facing up
+    m.position.set(0, depth * 0.42, 0.85);     // rest on its back, centred on (x, z)
+    const w = new THREE.Group(); w.add(m);
+    w.position.set(x, heightAt(x, z), z); w.rotation.y = ry; this.add(w);
+    return w;
+  }
+
+  // Soft additive glow sprite (fake light: cheap, so torches don't each need a real light).
+  glow(x, y, z, size = 1.2, color = 0xffa040) {
+    this.glowTex ??= (() => {
+      const c = document.createElement('canvas'); c.width = c.height = 64; const g = c.getContext('2d');
+      const gr = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+      gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.25, 'rgba(255,200,120,0.6)'); gr.addColorStop(1, 'rgba(255,120,40,0)');
+      g.fillStyle = gr; g.fillRect(0, 0, 64, 64); return new THREE.CanvasTexture(c);
+    })();
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.glowTex, color, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false }));
+    sp.position.set(x, y, z); sp.scale.setScalar(size); sp.userData.base = size; this.add(sp);
+    (this.glows ??= []).push(sp);
+    return sp;
+  }
+
   // A run of balustrade sections from (x0,z0) to (x1,z1); returns false when the model is missing.
-  balustrade(x0, z0, x1, z1, y = 0, h = 1.25) {
-    const probe = makeEnv('balustrade', h);
+  balustrade(x0, z0, x1, z1, y = 0, h = 1.25, name = 'balustrade') {
+    const probe = makeEnv(name, h);
     if (!probe) return false;
     const len = probe.userData.size.x * 0.98, dx = x1 - x0, dz = z1 - z0, L = Math.hypot(dx, dz);
     const n = Math.max(1, Math.round(L / len)), ry = Math.atan2(-dz, dx);
     for (let i = 0; i < n; i++) {
-      const m = i === 0 ? probe : makeEnv('balustrade', h);
+      const m = i === 0 ? probe : makeEnv(name, h);
       const t = (i + 0.5) / n;
       m.position.set(x0 + dx * t, y, z0 + dz * t); m.rotation.y = ry;
       m.scale.x *= L / n / len; // stretch slightly so sections meet
@@ -536,16 +630,22 @@ export class World {
     const y = heightAt(x, z);
     const glint = new THREE.Mesh(new THREE.OctahedronGeometry(0.08), new THREE.MeshBasicMaterial({ color: 0xffe6b0 }));
     glint.position.set(x, y + 0.35, z); this.add(glint);
-    const corpse = new THREE.Mesh(new THREE.CapsuleGeometry(0.22, 1.1, 4, 8), new THREE.MeshStandardMaterial({ color: 0x2c2420, roughness: 1 }));
-    corpse.rotation.set(Math.PI / 2, 0, this.rand() * 3); corpse.position.set(x + 0.4, y + 0.2, z); corpse.castShadow = true; this.add(corpse);
+    if (!this.corpse(x + 0.7, z, this.rand() * 6.28)) {
+      const corpse = new THREE.Mesh(new THREE.CapsuleGeometry(0.22, 1.1, 4, 8), new THREE.MeshStandardMaterial({ color: 0x2c2420, roughness: 1 }));
+      corpse.rotation.set(Math.PI / 2, 0, this.rand() * 3); corpse.position.set(x + 0.4, y + 0.2, z); corpse.castShadow = true; this.add(corpse);
+    }
     this.notes.push({ x, z, text, read: false, glint });
   }
 
   buildStreet() {
     // Start gate behind the player.
-    this.box(14, 9, 2, this.mat.darkStone, 0, 4.5, -10);
-    const portcullis = this.box(5, 6, 0.3, this.mat.iron, 0, 3, -8.9);
-    portcullis.material = this.mat.iron;
+    const gate = makeEnv('gate', 13);
+    if (gate) { gate.position.set(0, 0, -11.5); this.add(gate); }
+    else {
+      this.box(14, 9, 2, this.mat.darkStone, 0, 4.5, -10);
+      const portcullis = this.box(5, 6, 0.3, this.mat.iron, 0, 3, -8.9);
+      portcullis.material = this.mat.iron;
+    }
     // Townhouses lining both sides of the street.
     for (let z = -6; z < 58; z += 6.5 + this.rand() * 2) {
       const h = 9 + this.rand() * 7;
@@ -560,6 +660,7 @@ export class World {
     for (let z = 10; z < 58; z += 14) { this.banner(-6.3, 6.5, z, Math.PI / 2); this.banner(6.3, 6.5, z + 7, -Math.PI / 2); }
     for (const [z, side] of [[12, -1], [26, 1], [38, -1], [51, 1]]) this.cage(side * 7.3, z, 6.2, side);
     this.lantern(2.5, 3, 'Ward Gate');
+    this.shrine(4.6, 2.2, -Math.PI / 2); this.shrine(-5.2, 30, Math.PI / 2); this.shrine(5.3, 47.5, -Math.PI / 2);
     this.note(-3.6, 21, 'A ledger page, the ink still tacky.<br><br>"Saint Orlan\'s Ward — sealed at the ninth bell. Names counted: four hundred and twelve. Names spared: none.<br><br>Sentence carried out by the hand that signs below."<br><br>The signature is yours.');
   }
 
@@ -571,11 +672,15 @@ export class World {
     }
     for (const s of [-1, 1]) this.box(10, 7, 1.5, this.mat.darkStone, s * 11, 3.5, 92.5);
     // Cistern fountain with blood-dark water.
-    const basin = new THREE.Mesh(new THREE.CylinderGeometry(4, 4.3, 0.9, 24, 1, true), this.mat.stone);
-    basin.position.set(0, 0.45, 74); basin.castShadow = basin.receiveShadow = true; this.add(basin);
-    const water = new THREE.Mesh(new THREE.CircleGeometry(3.9, 24), new THREE.MeshStandardMaterial({ color: 0x1a0204, roughness: 0.05, metalness: 0.6 }));
-    water.rotation.x = -Math.PI / 2; water.position.set(0, 0.7, 74); this.add(water);
-    this.statue(0, 74, Math.PI, 1.3);
+    const fountain = makeEnv('fountain', 7.2);
+    if (fountain) { fountain.position.set(0, 0, 74); fountain.rotation.y = Math.PI; this.add(fountain); }
+    else {
+      const basin = new THREE.Mesh(new THREE.CylinderGeometry(4, 4.3, 0.9, 24, 1, true), this.mat.stone);
+      basin.position.set(0, 0.45, 74); basin.castShadow = basin.receiveShadow = true; this.add(basin);
+      const water = new THREE.Mesh(new THREE.CircleGeometry(3.9, 24), new THREE.MeshStandardMaterial({ color: 0x1a0204, roughness: 0.05, metalness: 0.6 }));
+      water.rotation.x = -Math.PI / 2; water.position.set(0, 0.7, 74); this.add(water);
+      this.statue(0, 74, Math.PI, 1.3);
+    }
     this.colliders.push({ x: 0, z: 74, r: 4.4 });
     this.brazier(-12, 64); this.brazier(12, 64); this.brazier(-12.5, 86, false); this.brazier(12.5, 86);
     for (const [x, z] of [[-13, 70], [13.5, 77], [-8, 88], [9, 60.5], [-14, 81]]) this.clutter(x, z);
@@ -583,6 +688,7 @@ export class World {
     this.tree(-13.2, 61, 10); this.tree(13, 89.5, 8.5);
     this.statue(-14.5, 75, Math.PI / 2, 0.9); this.statue(14.5, 70, -Math.PI / 2, 0.9);
     this.lantern(-10, 89, 'Cathedral Steps');
+    this.shrine(-12.4, 89.4, Math.PI / 2);
     this.note(11.5, 71, 'A Seer\'s prayer, scratched into a vial:<br><br>"Grace was given to close the wound. We drank, and the wound opened inward. The blood remembers who spilled it — and so it follows him."');
   }
 
@@ -620,6 +726,12 @@ export class World {
     this.fog = new THREE.Mesh(new THREE.PlaneGeometry(10, 7), fogMat);
     this.fog.position.set(0, ARENA.y + 3.5, GATE_Z);
     this.add(this.fog);
+    // A ruined gothic arch frames the fog gate; its piers block the passage edges.
+    const arch = makeEnv('archway', 10.6);
+    if (arch) {
+      arch.position.set(0, ARENA.y, GATE_Z + 0.4); this.add(arch);
+      for (const sx of [-1, 1]) this.colliders.push({ x: sx * 4.8, z: GATE_Z + 0.4, r: 0.7 });
+    }
     this.note(-3.2, 99, 'Carved into the step, fresh:<br><br>"It was set to guard the ward until the purge was done. No one told it the purge was done."');
   }
 
@@ -638,8 +750,9 @@ export class World {
       if (Math.abs(a - Math.PI * 1.5) < 0.3) continue; // entrance gap (toward -Z)
       const x = ARENA.x + Math.cos(a) * (ARENA.r + 1.2), z = ARENA.z + Math.sin(a) * (ARENA.r + 1.2);
       const h = i % 3 === 0 ? 4 + this.rand() * 3 : 9 + this.rand() * 4;
-      const p = new THREE.Mesh(new THREE.CylinderGeometry(0.8, 0.95, h, 8), this.mat.stone);
-      p.position.set(x, y + h / 2, z); p.castShadow = p.receiveShadow = true; this.add(p);
+      const pm = makeEnv('pillar', h);
+      if (pm) { pm.position.set(x, y, z); pm.rotation.y = this.rand() * 6.28; this.add(pm); }
+      else { const p = new THREE.Mesh(new THREE.CylinderGeometry(0.8, 0.95, h, 8), this.mat.stone); p.position.set(x, y + h / 2, z); p.castShadow = p.receiveShadow = true; this.add(p); }
       const a2 = a + Math.PI / 18, a0 = a + 0.07, a1 = a + Math.PI / 9 - 0.07, R2 = ARENA.r + 1.4;
       if (!this.balustrade(ARENA.x + Math.cos(a0) * R2, ARENA.z + Math.sin(a0) * R2, ARENA.x + Math.cos(a1) * R2, ARENA.z + Math.sin(a1) * R2, y)) {
         const wall = new THREE.Mesh(new THREE.BoxGeometry(5.6, 2.2, 0.8), this.mat.darkStone);
@@ -649,14 +762,46 @@ export class World {
     }
     // Cathedral facade beyond the arena.
     const cz = ARENA.z + ARENA.r + 8;
-    this.box(34, 28, 6, this.mat.stone, 0, y + 14, cz);
-    for (const s of [-1, 1]) {
-      this.box(7, 44, 7, this.mat.stone, s * 14, y + 22, cz);
-      const sp = new THREE.Mesh(new THREE.ConeGeometry(4.6, 18, 8), this.mat.roof); sp.position.set(s * 14, y + 53, cz); this.add(sp);
+    // Tripo cathedral (from the generated facade concept) or the primitive stand-in.
+    const H = 60;                                   // to the spire tips
+    const cath = makeEnv('cathedral', H);
+    let rosePos = new THREE.Vector3(0, y + 18, cz - 3.05), roseR = 5;
+    if (cath) {
+      const front = ARENA.z + ARENA.r + 4;
+      const depth = cath.userData.size.z;
+      cath.rotation.y = Math.PI;                    // face the arena
+      cath.position.set(0, y, front + depth / 2);
+      this.add(cath);
+      cath.updateMatrixWorld(true);
+      // The model's own stained-glass rose window: 38% up the facade, radius 7.4% of the height
+      // (measured on a straight-on render). Find the facade surface there for the glow overlay.
+      const ry = y + H * 0.382;
+      roseR = H * 0.074;
+      const hit = new THREE.Raycaster(new THREE.Vector3(0, ry, front - 10), new THREE.Vector3(0, 0, 1)).intersectObject(cath, true)[0];
+      rosePos = new THREE.Vector3(0, ry, (hit ? hit.point.z : front) - 0.05);
+    } else {
+      this.box(34, 28, 6, this.mat.stone, 0, y + 14, cz);
+      for (const s of [-1, 1]) {
+        this.box(7, 44, 7, this.mat.stone, s * 14, y + 22, cz);
+        const sp = new THREE.Mesh(new THREE.ConeGeometry(4.6, 18, 8), this.mat.roof); sp.position.set(s * 14, y + 53, cz); this.add(sp);
+      }
+      const peak = new THREE.Mesh(new THREE.ConeGeometry(9, 14, 4), this.mat.roof); peak.position.set(0, y + 35, cz); peak.rotation.y = Math.PI / 4; this.add(peak);
+      for (const s of [-1, 1]) this.banner(s * 5, y + 9, cz - 3.1, Math.PI);
     }
-    const peak = new THREE.Mesh(new THREE.ConeGeometry(9, 14, 4), this.mat.roof); peak.position.set(0, y + 35, cz); peak.rotation.y = Math.PI / 4; this.add(peak);
     // Rose window: glowing, slowly pulsing.
-    this.rose = new THREE.Mesh(new THREE.CircleGeometry(5, 32), new THREE.ShaderMaterial({
+    this.rose = new THREE.Mesh(new THREE.CircleGeometry(roseR, 48), cath ? new THREE.ShaderMaterial({
+      // Glow only: the model already has the tracery. Pulses; floods blood-red in phase 2.
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+      uniforms: { t: { value: 0 }, rage: { value: 0 } },
+      vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
+      fragmentShader: `varying vec2 vUv; uniform float t; uniform float rage;
+        void main(){
+          float r = length(vUv - 0.5) * 2.0;
+          float glow = smoothstep(1.0, 0.2, r) * (0.75 + 0.25 * sin(t * 1.5));
+          vec3 c = mix(vec3(0.55, 0.22, 0.05) * 0.45, vec3(1.0, 0.04, 0.02) * 1.1, rage);
+          gl_FragColor = vec4(c * glow, 1.0);
+        }`,
+    }) : new THREE.ShaderMaterial({
       uniforms: { t: { value: 0 }, rage: { value: 0 } },
       vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
       fragmentShader: `varying vec2 vUv; uniform float t; uniform float rage;
@@ -671,9 +816,8 @@ export class World {
           gl_FragColor = vec4(mix(glass, vec3(0.02), lead * 0.85), 1.0);
         }`,
     }));
-    this.rose.position.set(0, y + 18, cz - 3.05); this.rose.rotation.y = Math.PI; this.add(this.rose);
-    this.roseLight = new THREE.PointLight(0xff8030, 30, 45, 1.2); this.roseLight.position.set(0, y + 14, cz - 8); this.add(this.roseLight);
-    for (const s of [-1, 1]) this.banner(s * 5, y + 9, cz - 3.1, Math.PI);
+    this.rose.position.copy(rosePos); this.rose.rotation.y = Math.PI; this.add(this.rose);
+    this.roseLight = new THREE.PointLight(0xff8030, 30, 45, 1.2); this.roseLight.position.set(0, rosePos.y - 4, rosePos.z - 5); this.add(this.roseLight);
     // Cold moon-shaft over the arena so the Hound reads at any distance.
     const shaft = new THREE.SpotLight(0x9fb0e0, 140, 60, 0.75, 0.6, 1.2);
     shaft.position.set(ARENA.x - 6, y + 30, ARENA.z - 8);
@@ -741,6 +885,7 @@ export class World {
     }
     this.fog.material.uniforms.t.value = this.time;
     this.sky.material.uniforms.t.value = this.time;
+    for (const [i, g] of (this.glows || []).entries()) g.scale.setScalar(g.userData.base * (0.88 + Math.sin(this.time * 13 + i * 1.7) * 0.06 + Math.random() * 0.08));
     for (const m of this.mist) { m.material.uniforms.t.value = this.time; m.material.uniforms.cam.value.copy(center); }
     this.rose.material.uniforms.t.value = this.time;
     for (const n of this.notes) { n.glint.rotation.y += dt * 2; n.glint.visible = !n.read; n.glint.position.y = heightAt(n.x, n.z) + 0.35 + Math.sin(this.time * 3) * 0.05; }
