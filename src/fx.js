@@ -1,10 +1,15 @@
 import * as THREE from 'three';
 
 // Pooled particle system for blood, sparks, mist and dust.
+// Particles live in a fixed ring of preallocated slots: emitting reuses the oldest slot
+// (no Array.shift, no per-particle allocation), so a full pool costs the same as an empty one.
 export class FX {
-  constructor(scene) {
-    this.max = 2500;
-    this.p = [];
+  constructor(scene, { max = 2500, maxDecals = 80 } = {}) {
+    this.max = max;
+    this.maxDecals = maxDecals;
+    this.p = Array.from({ length: max }, () => ({ x: 0, y: 0, z: 0, v: new THREE.Vector3(), life: 0, max: 1, size: 0, c: [0, 0, 0], gravity: 0, drag: 0 }));
+    this.head = 0;
+    this.alive = 0;
     const geo = new THREE.BufferGeometry();
     this.pos = new Float32Array(this.max * 3);
     this.col = new Float32Array(this.max * 3);
@@ -28,12 +33,15 @@ export class FX {
 
   emit(n, origin, { color = [0.5, 0.02, 0.02], speed = 4, up = 2, life = 0.8, size = 0.08, gravity = 12, spread = 1, dir = null, drag = 0 } = {}) {
     for (let i = 0; i < n; i++) {
-      if (this.p.length >= this.max) this.p.shift();
-      const v = new THREE.Vector3((Math.random() - 0.5) * 2, Math.random() * up / Math.max(speed, 0.01), (Math.random() - 0.5) * 2).normalize().multiplyScalar(speed * (0.4 + Math.random() * 0.8) * spread);
+      const q = this.p[this.head];
+      this.head = (this.head + 1) % this.max;
+      const v = q.v.set((Math.random() - 0.5) * 2, Math.random() * up / Math.max(speed, 0.01), (Math.random() - 0.5) * 2).normalize().multiplyScalar(speed * (0.4 + Math.random() * 0.8) * spread);
       if (dir) v.addScaledVector(dir, speed * 0.8);
       v.y += up * Math.random();
-      const c = color.map((k) => k * (0.7 + Math.random() * 0.5));
-      this.p.push({ x: origin.x, y: origin.y, z: origin.z, v, life: life * (0.6 + Math.random() * 0.6), max: life, size: size * (0.6 + Math.random() * 0.8), c, gravity, drag });
+      for (let k = 0; k < 3; k++) q.c[k] = color[k] * (0.7 + Math.random() * 0.5);
+      q.x = origin.x; q.y = origin.y; q.z = origin.z;
+      q.life = life * (0.6 + Math.random() * 0.6); q.max = life; q.size = size * (0.6 + Math.random() * 0.8);
+      q.gravity = gravity; q.drag = drag;
     }
   }
 
@@ -57,30 +65,33 @@ export class FX {
     m.position.set(x, y + 0.02, z);
     this.scene.add(m);
     this.decals.push(m);
-    if (this.decals.length > 80) { const d = this.decals.shift(); this.scene.remove(d); d.geometry.dispose(); }
+    if (this.decals.length > this.maxDecals) { const d = this.decals.shift(); this.scene.remove(d); d.geometry.dispose(); }
   }
 
   update(dt) {
-    const alive = [];
-    for (const q of this.p) {
-      q.life -= dt;
-      if (q.life <= 0) continue;
-      q.v.y -= q.gravity * dt;
-      if (q.drag) q.v.multiplyScalar(Math.max(0, 1 - q.drag * dt));
-      q.x += q.v.x * dt; q.y += q.v.y * dt; q.z += q.v.z * dt;
-      const floor = this.heightAt ? this.heightAt(q.x, q.z) : 0;
-      if (q.y < floor + 0.02) { q.y = floor + 0.02; q.v.multiplyScalar(0.2); }
-      alive.push(q);
-    }
-    this.p = alive;
+    let alive = 0;
     for (let i = 0; i < this.max; i++) {
       const q = this.p[i];
-      if (!q) { this.size[i] = 0; continue; }
+      if (q.life > 0) {
+        q.life -= dt;
+        if (q.life > 0) {
+          alive++;
+          q.v.y -= q.gravity * dt;
+          if (q.drag) q.v.multiplyScalar(Math.max(0, 1 - q.drag * dt));
+          q.x += q.v.x * dt; q.y += q.v.y * dt; q.z += q.v.z * dt;
+          const floor = this.heightAt ? this.heightAt(q.x, q.z) : 0;
+          if (q.y < floor + 0.02) { q.y = floor + 0.02; q.v.multiplyScalar(0.2); }
+        }
+      }
+      if (q.life <= 0) { this.size[i] = 0; continue; }
       const k = q.life / q.max;
       this.pos[i * 3] = q.x; this.pos[i * 3 + 1] = q.y; this.pos[i * 3 + 2] = q.z;
       this.col[i * 3] = q.c[0]; this.col[i * 3 + 1] = q.c[1]; this.col[i * 3 + 2] = q.c[2];
       this.size[i] = q.size * Math.min(1, k * 2);
     }
+    const idle = alive === 0 && this.alive === 0;   // nothing changed since the last upload
+    this.alive = alive;
+    if (idle) return;
     const g = this.points.geometry;
     g.attributes.position.needsUpdate = g.attributes.color.needsUpdate = g.attributes.size.needsUpdate = true;
   }

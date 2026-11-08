@@ -362,6 +362,43 @@ export class World {
     this.add(moon); this.add(moon.target);
   }
 
+  // Many flames, few real lights. Every lit pixel pays for every PointLight in the scene, so
+  // the world's flame/lantern lights become virtual sources (still flickered and lit as before)
+  // and a fixed pool of real lights follows the ones nearest the camera. A source fades out as
+  // it nears the edge of the set, so lights hand over smoothly instead of popping.
+  // Call once, right after construction (before actors add their own lights).
+  poolLights(budget) {
+    const sources = [];
+    this.scene.updateMatrixWorld(true);
+    this.scene.traverse((o) => { if (o.isPointLight && o !== this.roseLight) sources.push(o); });
+    for (const l of sources) { l.userData.at = l.getWorldPosition(new THREE.Vector3()); l.removeFromParent(); }
+    this.lightSources = sources;
+    this.lightPool = Array.from({ length: Math.min(budget, sources.length) }, () => this.add(new THREE.PointLight(0xffffff, 0, 1, 1)));
+  }
+
+  // Ranks sources by distance from the camera, with lights behind it pushed back (they light
+  // little of what's on screen), and hands the pool to the best ones.
+  updateLightPool(camera) {
+    const S = this.lightSources, pool = this.lightPool;
+    if (!pool) return;
+    const c = camera.position, f = camera.getWorldDirection(this._camF ??= new THREE.Vector3());
+    for (const l of S) {
+      const at = l.userData.at;
+      if (l.intensity <= 0) { l.userData.d = Infinity; continue; }
+      const d = at.distanceTo(c), ahead = ((at.x - c.x) * f.x + (at.y - c.y) * f.y + (at.z - c.z) * f.z) / Math.max(d, 1e-3);
+      l.userData.d = d + Math.max(0, -ahead) * 12;
+    }
+    S.sort((a, b) => a.userData.d - b.userData.d);
+    const edge = S[pool.length]?.userData.d ?? Infinity;   // best source left out
+    for (let i = 0; i < pool.length; i++) {
+      const src = S[i], L = pool[i];
+      if (src.userData.d === Infinity) { L.intensity = 0; continue; }
+      L.position.copy(src.userData.at);
+      L.color.copy(src.color); L.distance = src.distance; L.decay = src.decay;
+      L.intensity = src.intensity * Math.min(1, (edge - src.userData.d) / 4);
+    }
+  }
+
   followShadow(pos) {
     this.moon.position.set(pos.x + 35, pos.y + 60, pos.z + 80);
     this.moon.target.position.copy(pos);

@@ -141,7 +141,13 @@ export class CharacterModel {
       if (o.isMesh) {
         o.castShadow = true;
         o.receiveShadow = true;
-        o.frustumCulled = false;
+        // Cull against a generous bind-pose sphere: three would otherwise compute the skinned
+        // sphere once from whatever pose it is in, and limbs could then poke out of it.
+        if (o.isSkinnedMesh) {
+          o.geometry.computeBoundingSphere();
+          o.boundingSphere = o.geometry.boundingSphere.clone();
+          o.boundingSphere.radius *= 1.6;
+        }
         if (o.material) {
           o.material = o.material.clone();
           o.material.roughness = Math.max(0.6, o.material.roughness ?? 1);

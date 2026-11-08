@@ -37,13 +37,20 @@ const GradeShader = {
 class Game {
   constructor() {
     const canvas = document.querySelector('#game');
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
     this.isTouch = isTouchDevice();
-    // Phones: lower render resolution keeps the frame rate up.
-    this.renderer.setPixelRatio(Math.min(devicePixelRatio, this.isTouch ? 1.25 : 1.75));
+    // No MSAA on the canvas: the scene is rendered into the composer's targets, so canvas
+    // antialiasing would only smooth the final full-screen quad (pure cost, no visible gain).
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
+    // Phones: lower render resolution keeps the frame rate up; adaptive resolution
+    // (see adaptResolution) trims it further while the frame rate sags, e.g. once the phone heats up.
+    this.maxPixelRatio = Math.min(devicePixelRatio, this.isTouch ? 1.25 : 1.75);
+    this.minPixelRatio = Math.min(this.maxPixelRatio, this.isTouch ? 0.7 : 1);
+    this.pixelRatio = this.maxPixelRatio;
+    this.perf = { t: 0, frames: 0, calm: 0 };
+    this.renderer.setPixelRatio(this.pixelRatio);
     this.renderer.setSize(innerWidth, innerHeight);
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = this.isTouch ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.75;
 
@@ -54,6 +61,11 @@ class Game {
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
     this.bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.55, 0.6, 0.82);
+    if (this.isTouch) {
+      // Phones: run the bloom chain at half resolution (it's a blur, so it looks the same).
+      const setSize = this.bloom.setSize.bind(this.bloom);
+      this.bloom.setSize = (w, h) => setSize(Math.max(1, Math.round(w / 2)), Math.max(1, Math.round(h / 2)));
+    }
     this.composer.addPass(this.bloom);
     this.grade = new ShaderPass(GradeShader);
     this.composer.addPass(this.grade);
@@ -86,6 +98,7 @@ class Game {
   async init() {
     await loadAssets((k) => { document.querySelector('#loading').textContent = `Gathering the dead… ${Math.round(k * 100)}%`; });
     this.world = new World(this.scene);
+    this.world.poolLights(this.isTouch ? 6 : 10);
     if (this.isTouch) this.world.moon.shadow.mapSize.set(1024, 1024);
     // Image-based lighting from the night sky: wet stone and metal reflect the moon and clouds.
     const pmrem = new THREE.PMREMGenerator(this.renderer);
@@ -93,7 +106,7 @@ class Game {
     envScene.add(new THREE.Mesh(new THREE.SphereGeometry(50, 32, 16), this.world.sky.material));
     this.scene.environment = pmrem.fromScene(envScene, 0.015).texture;
     this.scene.environmentIntensity = 0.4;
-    this.fx = new FX(this.scene);
+    this.fx = new FX(this.scene, this.isTouch ? { max: 1200, maxDecals: 30 } : {});
     this.fx.heightAt = heightAt;
     this.cam = new ThirdPersonCamera(this.camera);
     this.player = new Player(this);
@@ -176,7 +189,7 @@ class Game {
   hitStop(t) { this.hitStopT = Math.max(this.hitStopT, t); }
 
   shockwave(pos, r) {
-    const m = new THREE.Mesh(new THREE.RingGeometry(0.8, 1, 40), new THREE.MeshBasicMaterial({ color: 0xc09070, transparent: true, opacity: 0.6, side: THREE.DoubleSide, depthWrite: false }));
+    const m = new THREE.Mesh(this.ringGeo ??= new THREE.RingGeometry(0.8, 1, 40), new THREE.MeshBasicMaterial({ color: 0xc09070, transparent: true, opacity: 0.6, side: THREE.DoubleSide, depthWrite: false }));
     m.rotation.x = -Math.PI / 2; m.position.copy(pos).setY(pos.y + 0.1);
     this.scene.add(m);
     this.waves.push({ m, t: 0, r });
@@ -205,7 +218,7 @@ class Game {
       pool.m.material.opacity = Math.min(0.55, pool.t * 0.3);
       if (Math.random() < dt * 10) this.fx.poison(pool.m.position.clone().add(new THREE.Vector3((Math.random() - 0.5) * 2.4, 0, (Math.random() - 0.5) * 2.4)), 1);
       if (this.player.pos.distanceTo(pool.m.position) < 1.7 && !this.player.dead) this.player.poison = Math.max(this.player.poison, 2.5);
-      if (pool.t <= 0) { this.scene.remove(pool.m); pool.dead = true; }
+      if (pool.t <= 0) { this.scene.remove(pool.m); pool.m.material.dispose(); pool.dead = true; }
     }
     this.pools = this.pools.filter((p) => !p.dead);
     for (const w of this.waves) {
@@ -213,13 +226,13 @@ class Game {
       const k = w.t / 0.45;
       w.m.scale.setScalar(1 + k * w.r);
       w.m.material.opacity = 0.6 * (1 - k);
-      if (k >= 1) { this.scene.remove(w.m); w.dead = true; }
+      if (k >= 1) { this.scene.remove(w.m); w.m.material.dispose(); w.dead = true; }
     }
     this.waves = this.waves.filter((w) => !w.dead);
   }
 
   spawnPool(at) {
-    const m = new THREE.Mesh(new THREE.CircleGeometry(1.7, 20), new THREE.MeshBasicMaterial({ color: 0x5a8a1a, transparent: true, opacity: 0.55, depthWrite: false }));
+    const m = new THREE.Mesh(this.poolGeo ??= new THREE.CircleGeometry(1.7, 20), new THREE.MeshBasicMaterial({ color: 0x5a8a1a, transparent: true, opacity: 0.55, depthWrite: false }));
     m.rotation.x = -Math.PI / 2; m.position.copy(at).setY(at.y + 0.03);
     this.scene.add(m);
     this.pools.push({ m, t: 4.5 });
@@ -264,7 +277,7 @@ class Game {
   resetEnemies() {
     for (const s of this.seers) s.reset();
     for (const p of this.projectiles) this.scene.remove(p.m);
-    for (const p of this.pools) this.scene.remove(p.m);
+    for (const p of this.pools) { this.scene.remove(p.m); p.m.material.dispose(); }
     this.projectiles = []; this.pools = [];
     if (!this.bossDefeated) {
       this.boss.reset();
@@ -361,14 +374,36 @@ class Game {
 
   loop() {
     requestAnimationFrame(() => this.loop());
-    let dt = Math.min(this.clock.getDelta(), 1 / 20);
+    const raw = this.clock.getDelta();
+    let dt = Math.min(raw, 1 / 20);
     if (this.started && !this.paused) {
+      this.adaptResolution(raw);
       if (this.hitStopT > 0) { this.hitStopT -= dt; dt *= 0.05; }
       this.step(dt);
     }
+    this.world.updateLightPool(this.camera);
     this.grade.uniforms.t.value = performance.now() / 1000;
     this.composer.render();
     this.input.flush();
+  }
+
+  // Adaptive resolution: every 2 s, if the frame rate has sagged (a heavy view, or a phone
+  // that has heated up and throttled), render fewer pixels; once it's comfortably smooth
+  // again for a while, step back up. Long frames (tab switch, hitch) are ignored.
+  adaptResolution(raw) {
+    const P = this.perf;
+    if (raw > 0.25) return;
+    P.t += raw; P.frames++;
+    if (P.t < 2) return;
+    const fps = P.frames / P.t;
+    P.t = 0; P.frames = 0;
+    let pr = this.pixelRatio;
+    if (fps < 45) { pr = Math.max(this.minPixelRatio, pr - 0.15); P.calm = 0; }
+    else if (fps > 56 && ++P.calm >= 3) { pr = Math.min(this.maxPixelRatio, pr + 0.1); P.calm = 0; }
+    if (Math.abs(pr - this.pixelRatio) < 0.01) return;
+    this.pixelRatio = pr;
+    this.renderer.setPixelRatio(pr);
+    this.composer.setPixelRatio(pr);
   }
 
   // Bodies can't overlap: push living actors apart (the heavier one barely moves).
@@ -396,7 +431,8 @@ class Game {
     else p.sync(dt);
     for (const s of this.seers) {
       const near = s.dist(p) < 40 || s.aggro;
-      if (near) s.update(dt, p); else s.root.visible = !s.dead;
+      // Far, idle Seers aren't drawn at all (deep in the fog; saves skinning + draw calls).
+      if (near) s.update(dt, p); else s.root.visible = !s.dead && s.dist(p) < 70;
     }
     if (this.bossActive || this.bossDefeated) this.boss.update(dt, p);
     else this.boss.sync(dt);
