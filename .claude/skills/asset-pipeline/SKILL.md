@@ -20,6 +20,7 @@ Each step ends on its criterion. Tool arguments live in each script's header com
    | Task | Credits |
    |---|---|
    | text-to-model `--model tripo-v3.1 -p texture_quality=detailed` | 30 |
+   | image-to-model, same settings | 40 |
    | text- or image-to-model, default P2 | 110 |
    | rig / retarget | 25 / 10–50 |
 

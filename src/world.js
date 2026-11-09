@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { makeEnv } from './assets.js';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 // Saint Orlan's Ward — one linear level:
 //   gate courtyard (lantern) → plague street → cistern plaza (lantern) →
@@ -151,6 +152,19 @@ function lightConeMaterial(color, strength) {
   });
 }
 
+// Wet cobbles: puddles stay glossy, but never mirror-smooth, and direct-light glints are damped.
+// Facing the moon (toward the cathedral) its glint on the puddles bloomed into a white blob
+// metres across; the sky reflection (envMap) keeps the wet sheen.
+function wetFloor(m) {
+  m.onBeforeCompile = (sh) => {
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n  roughnessFactor = max(roughnessFactor, 0.3);')
+      .replace('#include <lights_fragment_end>', '#include <lights_fragment_end>\n  reflectedLight.directSpecular *= 0.3;');
+  };
+  m.customProgramCacheKey = () => 'wetFloor';
+  return m;
+}
+
 // One clock for every animated world shader (flames, embers, banner sway); World.update ticks it.
 const worldTime = { value: 0 };
 
@@ -299,7 +313,38 @@ export class World {
     this.buildMist();
     this.buildLeaves();
     this.buildDetails();
+    this.buildDecals();
     if (this.emberSrc) this.add(emberPoints(this.emberSrc));
+    this.batchStatic([...(this.houses ?? []), ...(this.statics ?? [])]);
+  }
+
+  // Townhouses are ~60 small primitives each (window panes, arches, jambs, hoods, sills, bands,
+  // quoins): over a thousand draw calls for the street. They never move, so bake them into one
+  // mesh per material. Parts flagged userData.keep (the Tripo doorways) stay as they are.
+  batchStatic(groups = []) {
+    const byMat = new Map();
+    for (const g of groups) {
+      g.updateMatrixWorld(true);
+      const parts = [];
+      g.traverse((o) => { if (o.isMesh && !o.parent.userData.keep && !o.userData.keep) { let p = o; while (p && p !== g) { if (p.userData.keep) return; p = p.parent; } parts.push(o); } });
+      for (const m of parts) {
+        let geo = m.geometry.index ? m.geometry.toNonIndexed() : m.geometry.clone();
+        geo.clearGroups();
+        for (const k of Object.keys(geo.attributes)) if (!['position', 'normal', 'uv'].includes(k)) geo.deleteAttribute(k);
+        if (!geo.attributes.uv) geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(geo.attributes.position.count * 2), 2));
+        geo.applyMatrix4(m.matrixWorld);
+        m.geometry.dispose();
+        const e = byMat.get(m.material) ?? { geos: [], cast: false };
+        e.geos.push(geo); e.cast ||= m.castShadow; byMat.set(m.material, e);
+        m.removeFromParent();
+      }
+    }
+    for (const [mat, { geos, cast }] of byMat) {
+      const merged = new THREE.Mesh(mergeGeometries(geos, false), mat);
+      merged.castShadow = cast; merged.receiveShadow = true;
+      this.add(merged);
+      geos.forEach((g) => g.dispose());
+    }
   }
 
   // Small Tripo set-dressing props (each call is a no-op if that model is missing).
@@ -517,7 +562,7 @@ export class World {
     const g = new THREE.Mesh(new THREE.PlaneGeometry(80, 240), mat);
     g.rotation.x = -Math.PI / 2; g.position.set(0, 0, 90); g.receiveShadow = true;
     this.add(g);
-    this.cobbleMat = mat;
+    this.cobbleMat = wetFloor(mat);
   }
 
   // A narrow gothic townhouse facing the street.
@@ -554,11 +599,12 @@ export class World {
     for (const sx of [-1, 1]) { const q = new THREE.Mesh(new THREE.BoxGeometry(0.35, h, 0.35), this.mat.trim); q.position.set(sx * (w / 2 - 0.1), h / 2, d / 2 - 0.05); q.castShadow = true; g.add(q); }
     // door: carved gothic doorway (Tripo) or a plain plank door.
     const dw = makeEnv('doorway', 3.3);
-    if (dw) { dw.position.set(0, 0, d / 2 + dw.userData.size.z / 2 - 0.25); g.add(dw); }
+    if (dw) { dw.position.set(0, 0, d / 2 + dw.userData.size.z / 2 - 0.25); dw.userData.keep = true; g.add(dw); }
     else { const door = new THREE.Mesh(new THREE.BoxGeometry(1.2, 2.3, 0.2), this.mat.wood); door.position.set(0, 1.15, d / 2); g.add(door); }
     g.position.set(x, 0, z); g.rotation.y = face;
     (this.facades ??= []).push({ x: x + Math.sin(face) * d / 2, z: z + Math.cos(face) * d / 2, w, face });
     this.add(g);
+    (this.houses ??= []).push(g);
   }
 
   lamp(x, z, withLight = true) {
@@ -804,6 +850,7 @@ export class World {
     const y = heightAt(x, z);
     const glint = new THREE.Mesh(new THREE.OctahedronGeometry(0.08), new THREE.MeshBasicMaterial({ color: 0xffe6b0 }));
     glint.position.set(x, y + 0.35, z); this.add(glint);
+    this.prop('note', 0.12, x - 0.45, z + 0.2, this.rand() * 6.28, { y });   // the blood-stained letter, dropped beside the body
     if (!this.corpse(x + 0.7, z, this.rand() * 6.28)) {
       const corpse = new THREE.Mesh(new THREE.CapsuleGeometry(0.22, 1.1, 4, 8), new THREE.MeshStandardMaterial({ color: 0x2c2420, roughness: 1 }));
       corpse.rotation.set(Math.PI / 2, 0, this.rand() * 3); corpse.position.set(x + 0.4, y + 0.2, z); corpse.castShadow = true; this.add(corpse);
@@ -841,11 +888,13 @@ export class World {
 
   buildPlaza() {
     // Plaza enclosure walls and houses.
+    // Enclosure: the Tripo gothic wall kit along the walkable edge (x ±15.5, z 92), or plain slabs.
+    const kit = ['wall_niche', 'wall_buttress', 'wall_niche', 'wall_buttress', 'wall_niche'];
     for (const s of [-1, 1]) {
-      this.box(1.5, 7, 34, this.mat.darkStone, s * 16.3, 3.5, 75);
+      if (!this.wallRun(s * 15.5, 58, s * 15.5, 92, kit, -s, 0)) this.box(1.5, 7, 34, this.mat.darkStone, s * 16.3, 3.5, 75);
       for (let z = 62; z < 90; z += 7) this.townhouse(s * 21, z, 8, 6, 12 + this.rand() * 6, s < 0 ? Math.PI / 2 : -Math.PI / 2);
     }
-    for (const s of [-1, 1]) this.box(10, 7, 1.5, this.mat.darkStone, s * 11, 3.5, 92.5);
+    for (const s of [-1, 1]) if (!this.wallRun(s * 5.4, 92, s * 17, 92, ['wall_niche', 'wall_niche'], 0, -1)) this.box(10, 7, 1.5, this.mat.darkStone, s * 11, 3.5, 92.5);
     // Cistern fountain with blood-dark water.
     const fountain = makeEnv('fountain', 7.2);
     if (fountain) { fountain.position.set(0, 0, 74); fountain.rotation.y = Math.PI; this.add(fountain); }
@@ -867,18 +916,21 @@ export class World {
   }
 
   buildSteps() {
-    const steps = 16;
+    const steps = 16, stair = this.add(new THREE.Group()); (this.statics ??= []).push(stair);   // baked by batchStatic
     for (let i = 0; i < steps; i++) {
       const z0 = 93 + (i / steps) * 8;
       const h = ((i + 1) / steps) * ARENA.y;
       const s = new THREE.Mesh(new THREE.BoxGeometry(10.4, h, 8 / steps + 0.02), this.mat.stone);
-      s.position.set(0, h / 2, z0 + 4 / steps); s.receiveShadow = true; s.castShadow = true; this.add(s);
+      s.position.set(0, h / 2, z0 + 4 / steps); s.receiveShadow = true; s.castShadow = true; stair.add(s);
     }
     // Landing + passage floor up to the arena.
     const landing = new THREE.Mesh(new THREE.BoxGeometry(10.4, ARENA.y, 12), this.mat.stone);
     landing.position.set(0, ARENA.y / 2, 107); landing.receiveShadow = true; this.add(landing);
     for (const s of [-1, 1]) {
-      this.box(1, 9, 20, this.mat.darkStone, s * 5.8, ARENA.y + 2.5, 103);
+      // Wall kit beside the stairs and along the landing to the fog gate; plain slab without it.
+      const kit = this.wallRun(s * 5.2, 93, s * 5.2, 101, ['wall_niche'], -s, 0, { H: 9.4 })
+        && this.wallRun(s * 5.2, 101, s * 5.2, 113, ['wall_niche', 'wall_niche'], -s, 0, { y: ARENA.y, H: 7 });
+      if (!kit) this.box(1, 9, 20, this.mat.darkStone, s * 5.8, ARENA.y + 2.5, 103);
       this.statue(s * 4.4, 101.5, s > 0 ? -Math.PI / 2 : Math.PI / 2, 0.8);
     }
     this.lamp(-4.6, 96); this.lamp(4.6, 96, false);
@@ -911,7 +963,7 @@ export class World {
 
   buildArena() {
     const y = ARENA.y;
-    const floor = new THREE.Mesh(new THREE.CircleGeometry(ARENA.r + 2, 48), this.cobbleMat.clone());
+    const floor = new THREE.Mesh(new THREE.CircleGeometry(ARENA.r + 2, 48), wetFloor(this.cobbleMat.clone()));
     floor.material.map = this.cobbleMat.map.clone(); floor.material.map.repeat.set(15, 15); floor.material.map.needsUpdate = true;
     floor.material.roughnessMap = this.cobbleMat.roughnessMap.clone(); floor.material.roughnessMap.repeat.set(15, 15); floor.material.roughnessMap.needsUpdate = true;
     floor.material.normalMap = this.cobbleMat.normalMap.clone(); floor.material.normalMap.repeat.set(15, 15); floor.material.normalMap.needsUpdate = true;
@@ -1000,27 +1052,84 @@ export class World {
     // Arena braziers.
     for (const a of [0.6, 2.55, 3.7, 5.7]) this.brazier(ARENA.x + Math.cos(a) * (ARENA.r - 2), ARENA.z + Math.sin(a) * (ARENA.r - 2), a < 3);
     this.tree(ARENA.x - 25, ARENA.z - 4, 11); this.tree(ARENA.x + 24, ARENA.z + 6, 9.5);
-    // Bones and claw-gouges scattered about.
-    for (let i = 0; i < 26; i++) {
-      const a = this.rand() * Math.PI * 2, r = 3 + this.rand() * (ARENA.r - 4);
-      const b = new THREE.Mesh(new THREE.CapsuleGeometry(0.04, 0.35 + this.rand() * 0.3, 2, 4), this.mat.bone);
-      b.position.set(ARENA.x + Math.cos(a) * r, y + 0.05, ARENA.z + Math.sin(a) * r);
-      b.rotation.set(Math.PI / 2, 0, this.rand() * 6); this.add(b);
+    // The Hound's leavings: a few small bone heaps on the floor (no colliders, so they never snag
+    // a dodge). Falls back to loose capsule bones without the model.
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2 + this.rand() * 0.8, r = 5 + this.rand() * (ARENA.r - 9);
+      const bx = ARENA.x + Math.cos(a) * r, bz = ARENA.z + Math.sin(a) * r;
+      if (this.prop('bones', 0.3 + this.rand() * 0.15, bx, bz, this.rand() * 6.28, { y })) continue;
+      const b = new THREE.Mesh(new THREE.CapsuleGeometry(0.04, 0.45, 2, 4), this.mat.bone);
+      b.position.set(bx, y + 0.05, bz); b.rotation.set(Math.PI / 2, 0, this.rand() * 6); this.add(b);
     }
   }
 
+  // Veyr beyond the ward: a painted skyline (public/textures/skyline.webp, keyed out of
+  // art/refs/skyline.png) on one open cylinder around the level. One draw call; alpha-tested.
+  // Beyond the fog's reach, so it skips fog and is tinted toward the night haze instead.
+  // Hidden until the texture arrives, so a missing file just leaves open sky.
   buildDistantCity() {
-    // Silhouette spires around the level for a sense of Veyr beyond the ward.
-    const mat = new THREE.MeshBasicMaterial({ color: 0x07070b, fog: true });
-    const lit = new THREE.MeshBasicMaterial({ color: 0xffa050 });
-    for (let i = 0; i < 70; i++) {
-      const a = this.rand() * Math.PI * 2, r = 90 + this.rand() * 120;
-      const x = Math.cos(a) * r, z = 90 + Math.sin(a) * r;
-      const h = 20 + this.rand() * 50, w = 6 + this.rand() * 10;
-      const t = new THREE.Mesh(new THREE.BoxGeometry(w, h, w), mat); t.position.set(x, h / 2 - 5, z); this.add(t);
-      const s = new THREE.Mesh(new THREE.ConeGeometry(w * 0.6, h * 0.5, 6), mat); s.position.set(x, h - 5 + h * 0.25, z); this.add(s);
-      if (this.rand() < 0.5) { const wv = new THREE.Mesh(new THREE.PlaneGeometry(1, 2), lit); wv.position.set(x, h * 0.6, z); wv.lookAt(0, h * 0.6, 60); this.add(wv); }
+    const R = 170, tiles = 4, aspect = 2048 / 587, H = (2 * Math.PI * R) / tiles / aspect;
+    const mat = new THREE.MeshBasicMaterial({ color: 0x9aa4bc, side: THREE.BackSide, alphaTest: 0.5, fog: false, visible: false });
+    const ring = new THREE.Mesh(new THREE.CylinderGeometry(R, R, H, 64, 1, true), mat);
+    ring.position.set(0, H / 2 - 14, 70);
+    this.add(ring);
+    new THREE.TextureLoader().load('textures/skyline.webp', (tex) => {
+      tex.colorSpace = THREE.SRGBColorSpace; tex.wrapS = THREE.RepeatWrapping; tex.repeat.set(tiles, 1);
+      mat.map = tex; mat.visible = true; mat.needsUpdate = true;
+    });
+  }
+
+  // A run of gothic wall-kit pieces whose FRONT faces lie on the line (x0,z0)→(x1,z1), facing
+  // (fx, fz). Pieces are stretched along the run to fit it exactly and squashed in depth to
+  // maxDepth so buttresses never reach into walkable space. False when a model is missing.
+  wallRun(x0, z0, x1, z1, names, fx, fz, { H = 7, maxDepth = 2.5, y = 0 } = {}) {
+    const pieces = names.map((n) => makeEnv(n, H));
+    if (pieces.some((p) => !p)) return false;
+    const L = Math.hypot(x1 - x0, z1 - z0), ux = (x1 - x0) / L, uz = (z1 - z0) / L;
+    const k = L / pieces.reduce((a, p) => a + p.userData.size.x, 0);
+    let at = 0;
+    for (const p of pieces) {
+      const len = p.userData.size.x * k, sz = Math.min(1, maxDepth / p.userData.size.z), dep = p.userData.size.z * sz;
+      p.scale.x *= k; p.scale.z *= sz;
+      p.rotation.y = Math.atan2(fx, fz);
+      const c = at + len / 2;
+      p.position.set(x0 + ux * c - fx * dep / 2, y, z0 + uz * c - fz * dep / 2);
+      this.add(p); at += len;
     }
+    return true;
+  }
+
+  // Ground decals from one 2×2 atlas (public/textures/decals.webp): 0 blood pool, 1 blood smear,
+  // 2 dead leaves, 3 ash. Placed where the story leaves them (blood by the dead and in the
+  // Hound's courtyard, ash under braziers, leaves against walls and trees), then merged into a
+  // single mesh: one draw call, alpha-tested, pulled toward the camera so it never z-fights.
+  buildDecals() {
+    const r = this.rand, spots = [];
+    const put = (k, x, z, size) => spots.push({ k, x, z, size });
+    for (const [x, z] of [[-2.8, 11], [3.4, 23], [-4.2, 37.5], [2.2, 50], [6.5, 66], [-5.5, 81]]) put(0, x + 0.7, z + 0.4, 1.7);
+    for (const [x, z] of [[1.4, 16], [-1.6, 30], [0.8, 44]]) put(1, x, z, 2.6);
+    for (const [x, z] of [[-11.7, 62], [11.5, 88], [-6.2, 6], [6.1, 27], [-6.3, 46], [6.2, 57]]) put(2, x, z, 2.2);
+    for (const [x, z] of [[-12, 64], [12, 64], [-12.5, 86], [12.5, 86]]) put(3, x, z, 2.6);
+    for (const a of [0.6, 2.55, 3.7, 5.7]) put(3, ARENA.x + Math.cos(a) * (ARENA.r - 2), ARENA.z + Math.sin(a) * (ARENA.r - 2), 2.6);
+    for (let i = 0; i < 7; i++) {
+      const a = r() * Math.PI * 2, d = 3 + r() * (ARENA.r - 6);
+      put(i < 3 ? 0 : 1, ARENA.x + Math.cos(a) * d, ARENA.z + Math.sin(a) * d, i < 3 ? 2.2 : 3.2);
+    }
+    const geos = spots.map(({ k, x, z, size }) => {
+      const g = new THREE.PlaneGeometry(size, size).rotateX(-Math.PI / 2).rotateY(r() * Math.PI * 2);
+      g.translate(x, heightAt(x, z) + 0.02, z);
+      const uv = g.attributes.uv, u0 = (k % 2) * 0.5, v0 = k < 2 ? 0.5 : 0;
+      for (let i = 0; i < uv.count; i++) uv.setXY(i, u0 + uv.getX(i) * 0.5, v0 + uv.getY(i) * 0.5);
+      return g;
+    });
+    const mat = new THREE.MeshStandardMaterial({ roughness: 0.55, alphaTest: 0.5, polygonOffset: true, polygonOffsetFactor: -2, visible: false });
+    const mesh = new THREE.Mesh(mergeGeometries(geos, false), mat);
+    mesh.receiveShadow = true; this.add(mesh);
+    geos.forEach((g) => g.dispose());
+    new THREE.TextureLoader().load('textures/decals.webp', (tex) => {
+      tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 4;
+      mat.map = tex; mat.visible = true; mat.needsUpdate = true;
+    });
   }
 
   buildAsh() {
