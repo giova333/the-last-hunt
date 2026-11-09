@@ -11,6 +11,7 @@ export class UI {
     this.st = $('.bar.st .fill');
     this.stBar = $('.bar.st');
     this.vials = $('#vial-count');
+    this.vialIcon = $('#vials .vial-icon');
     this.echoes = $('#echo-count');
     this.prompt = $('#prompt');
     this.area = $('#area-title');
@@ -71,6 +72,7 @@ export class UI {
     this.rally.style.transform = `scaleX(${Math.min(1, (p.hp + p.rally) / p.maxHp)})`;
     this.st.style.transform = `scaleX(${Math.max(0, p.stamina / p.maxStamina)})`;
     this.vials.textContent = p.vials;
+    this.vialIcon.classList.toggle('empty', p.vials === 0);
     this.echoes.textContent = p.echoes;
     this.poison.classList.toggle('on', p.poison > 0);
     if (boss) {
@@ -101,6 +103,19 @@ export class UI {
     this.areaT = setTimeout(() => this.area.classList.remove('on'), 3200);
   }
 
+  hint(text, ms = 5000) {
+    const h = (this.hintEl ??= document.querySelector('#hint'));
+    h.innerHTML = text; h.classList.add('on');
+    clearTimeout(this.hintT); this.hintT = setTimeout(() => h.classList.remove('on'), ms);
+  }
+
+  showResults(rows, onAgain) {
+    const r = document.querySelector('#results');
+    r.querySelector('dl').innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+    r.querySelector('.again').onclick = onAgain;
+    r.classList.remove('hidden');
+  }
+
   showBoss(on) { this.boss.classList.toggle('hidden', !on); }
 
   showNote(html) {
@@ -108,6 +123,19 @@ export class UI {
     this.note.classList.remove('hidden');
   }
   hideNote() { this.note.classList.add('hidden'); }
+
+  // Lantern rest menu. rows: [{ key, label, desc, cost, can }]; buttons buy on tap/click.
+  showLantern({ echoes, cost, rows }, onBuy, bought = null) {
+    const m = (this.lanternMenu ??= document.querySelector('#lantern-menu'));
+    m.querySelector('.echoes').textContent = echoes;
+    m.querySelector('.cost').textContent = cost;
+    m.querySelector('.rows').innerHTML = rows.map((r, i) =>
+      `<button class="row${r.key === bought ? ' bought' : ''}" data-key="${r.key}"${r.can ? '' : ' disabled'}><b>${i + 1}</b><span>${r.label}</span><small>${r.desc}</small></button>`).join('');
+    m.querySelectorAll('.row').forEach((el) => { el.onclick = () => onBuy(el.dataset.key); });
+    m.classList.remove('hidden');
+  }
+  hideLantern() { this.lanternMenu?.classList.add('hidden'); }
+  get lanternOpen() { return !!this.lanternMenu && !this.lanternMenu.classList.contains('hidden'); }
   get noteOpen() { return !this.note.classList.contains('hidden'); }
 
   flashHurt() {

@@ -19,7 +19,10 @@ export class Player extends Actor {
     this.stamina = 100;
     this.maxStamina = 100;
     this.staminaWait = 0;
-    this.vials = T.maxVials;
+    this.maxVials = T.maxVials;   // raised by vial shards and lantern upgrades
+    this.vials = this.maxVials;
+    this.level = 1;               // lantern upgrades bought; sets the next price
+    this.dmgMul = 1;              // Strength
     this.rally = 0;       // hp that can be regained by striking back
     this.rallyT = 0;
     this.poison = 0;
@@ -46,7 +49,7 @@ export class Player extends Actor {
   respawn(at) {
     this.pos.set(at.x, at.y, at.z);
     this.yaw = at.yaw ?? 0;
-    this.hp = this.maxHp; this.stamina = this.maxStamina; this.vials = T.maxVials;
+    this.hp = this.maxHp; this.stamina = this.maxStamina; this.vials = this.maxVials;
     this.rally = 0; this.poison = 0; this.dead = false; this.lock = null;
     this.knock.set(0, 0, 0);
     this.resetPose();
@@ -238,7 +241,7 @@ export class Player extends Actor {
         if (k > C.windup - 0.1 && k < hit) this.walk(this.forward.x * (P.lunge ?? 2) * dt, this.forward.z * (P.lunge ?? 2) * dt);
         if (!this.swung && k >= C.windup) { this.swung = true; g.audio.swing(this.state === 'heavy'); }
         if (k >= C.windup + C.strike * 0.2 && k <= C.windup + C.strike + 0.04) {
-          if (this.melee(g.enemiesAll(), { range: P.range, arc: P.arc, damage: P.damage, poise: P.poise, knock: this.state === 'heavy' ? 4 : 2 })) {
+          if (this.melee(g.enemiesAll(), { range: P.range, arc: P.arc, damage: P.damage * this.dmgMul, poise: P.poise, knock: this.state === 'heavy' ? 4 : 2 })) {
             g.hitStop(this.state === 'heavy' ? 0.11 : 0.06);
           }
         }

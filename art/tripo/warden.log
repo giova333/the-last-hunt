@@ -1,0 +1,12 @@
+task created c3d3803a-9c16-4342-a588-311ca88b2e17 (@warden)
+multiview_to_model · queued
+multiview_to_model · running 9% · c3d3803a
+multiview_to_model · running 15% · c3d3803a
+multiview_to_model · running 24% · c3d3803a
+multiview_to_model · running 37% · c3d3803a
+multiview_to_model · running 57% · c3d3803a
+multiview_to_model · running 87% · c3d3803a
+multiview_to_model · success 100% · c3d3803a
+✓ multiview_to_model · c3d3803a-9c16-4342-a588-311ca88b2e17 · 110 credits
+downloading artifacts…
+✓ artifacts saved to art/tripo/warden/tripo-out/warden-c3d3803a

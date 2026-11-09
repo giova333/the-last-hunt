@@ -10,6 +10,7 @@ export const CHARACTERS = {
   hunter: { url: 'models/hunter.glb', height: 1.85, color: 0x3a2a20, accent: 0x7a1414 },
   seer: { url: 'models/seer.glb', height: 2.1, color: 0x4a3426, accent: 0x6a1c1c },
   wolf: { url: 'models/wolf.glb', height: 5.8, color: 0x5a4c48, accent: 0x9a8a80 },
+  warden: { url: 'models/warden.glb', height: 3.1, color: 0x2a2224, accent: 0x6a1c1c },   // mini-boss at the steps
 };
 
 // Keywords used to map whatever clip names a GLB carries onto game states.
@@ -83,6 +84,7 @@ export async function loadAssets(onProgress) {
 export const PROPS = {
   cleaver: { url: 'models/cleaver.glb', length: 1.15 },
   censer: { url: 'models/censer.glb', length: 1.5 },
+  bellhammer: { url: 'models/bellhammer.glb', length: 2.3 },
 };
 
 export function makeProp(name) {
@@ -100,7 +102,7 @@ export function hasModel(name) { return !!loaded[name]; }
 
 // Environment props (Tripo text-to-model → tools/build_env.py: origin at the base, unit size).
 // Tripo's models face +X; makeEnv() turns them to face +Z and scales them to a height in metres.
-export const ENV = Object.fromEntries(['statue', 'lamp', 'doorway', 'balustrade', 'cart', 'cage', 'tree', 'coffins', 'pillar', 'brazier', 'archway', 'fountain', 'gate', 'shrine', 'cathedral', 'torch', 'candelabra', 'chandelier', 'barrels', 'crates', 'bones', 'tombstone', 'corpse', 'gargoyle', 'fence'].map((n) => [n, { url: `models/env/${n}.glb` }]));
+export const ENV = Object.fromEntries(['statue', 'lamp', 'doorway', 'balustrade', 'cart', 'cage', 'tree', 'coffins', 'pillar', 'brazier', 'archway', 'fountain', 'gate', 'shrine', 'cathedral', 'torch', 'candelabra', 'chandelier', 'barrels', 'crates', 'bones', 'tombstone', 'corpse', 'gargoyle', 'fence', 'lantern', 'wall_buttress', 'wall_niche', 'note'].map((n) => [n, { url: `models/env/${n}.glb` }]));
 const envPrepared = new Set();
 export function makeEnv(name, height) {
   const gltf = loaded[name];

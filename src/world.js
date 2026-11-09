@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 import { makeEnv } from './assets.js';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { makeVial } from './drink.js';
 
 // Saint Orlan's Ward — one linear level:
 //   gate courtyard (lantern) → plague street → cistern plaza (lantern) →
@@ -14,7 +16,11 @@ const RECTS = [
   { x0: -6.2, x1: 6.2, z0: -9, z1: 62 },     // street
   { x0: -15.5, x1: 15.5, z0: 58, z1: 92 },   // plaza
   { x0: -5.2, x1: 5.2, z0: 90, z1: 112 },    // steps + gate passage
+  { x0: 5, x1: 16, z0: -7, z1: -2.5 },       // shortcut passage off the start street (overlaps it by > 2 radii, or bodies stick at the seam)
+  { x0: 14.2, x1: 16, z0: -7, z1: 60 },      // back alley behind the east houses, into the plaza
 ];
+// Iron gate across the shortcut passage: barred until unbarred from the alley side.
+export const SHORTCUT = { x: 7.2, z0: -7, z1: -2.5 };
 
 export function heightAt(x, z) {
   if (z < 93) return 0;
@@ -22,8 +28,9 @@ export function heightAt(x, z) {
   return ARENA.y;
 }
 
-function inside(x, z, r, gateOpen, gateSealed) {
+function inside(x, z, r, gateOpen, gateSealed, barred = false) {
   if (!gateOpen && z > GATE_Z - 0.6 - r) return false;       // fog gate not yet crossed
+  if (barred && z > SHORTCUT.z0 && z < SHORTCUT.z1 && Math.abs(x - SHORTCUT.x) < r + 0.15) return false;   // shortcut gate
   if (gateSealed && z < GATE_Z + 3 + r) return false;          // sealed in with the boss
   for (const R of RECTS) if (x > R.x0 + r && x < R.x1 - r && z > R.z0 + r && z < R.z1 - r) return true;
   const dx = x - ARENA.x, dz = z - ARENA.z;
@@ -151,6 +158,122 @@ function lightConeMaterial(color, strength) {
   });
 }
 
+// Wet cobbles: puddles stay glossy, but never mirror-smooth, and direct-light glints are damped.
+// Facing the moon (toward the cathedral) its glint on the puddles bloomed into a white blob
+// metres across; the sky reflection (envMap) keeps the wet sheen.
+function wetFloor(m) {
+  m.onBeforeCompile = (sh) => {
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n  roughnessFactor = max(roughnessFactor, 0.3);')
+      .replace('#include <lights_fragment_end>', '#include <lights_fragment_end>\n  reflectedLight.directSpecular *= 0.3;');
+  };
+  m.customProgramCacheKey = () => 'wetFloor';
+  return m;
+}
+
+// One clock for every animated world shader (flames, embers, banner sway); World.update ticks it.
+const worldTime = { value: 0 };
+
+// A copy of a textured standard material whose amber/orange texels (the lantern's glass panes)
+// emit light, scaled by the shared `glow` uniform. The mask comes from the texture colour, so
+// the iron, wax and bone stay unlit. Linear-space values: amber ≈ (0.7, 0.32, 0.05).
+function amberGlowMaterial(src, glow) {
+  const m = src.clone();
+  m.onBeforeCompile = (sh) => {
+    sh.uniforms.uGlow = glow;
+    sh.fragmentShader = 'uniform float uGlow;\n' + sh.fragmentShader.replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+      float amber = smoothstep(0.3, 0.45, diffuseColor.r - diffuseColor.b) * (1.0 - smoothstep(0.15, 0.3, diffuseColor.b));
+      totalEmissiveRadiance += diffuseColor.rgb * amber * uGlow;`);
+  };
+  m.customProgramCacheKey = () => 'amberGlow';
+  return m;
+}
+
+// Brazier fire: a camera-facing (Y-axis) quad with a procedural noise flame. One material and
+// one geometry shared by every brazier; each flame's phase comes from its world position, so
+// they never flicker in sync. Additive, no depth write, no lights: as cheap as the old cone.
+let flameMat, flameGeo;
+function flameMesh() {
+  flameGeo ??= new THREE.PlaneGeometry(1, 1).translate(0, 0.5, 0);
+  flameMat ??= new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false,
+    uniforms: { t: worldTime },
+    vertexShader: `varying vec2 vUv; varying float vPh;
+      void main(){
+        vUv = uv;
+        vec3 c = (modelMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+        vPh = c.x * 1.7 + c.z * 0.9;
+        vec3 toCam = cameraPosition - c; toCam.y = 0.0; toCam = normalize(toCam + vec3(1e-4, 0.0, 0.0));
+        vec3 right = vec3(toCam.z, 0.0, -toCam.x);
+        float sx = length(modelMatrix[0].xyz), sy = length(modelMatrix[1].xyz);
+        vec3 wp = c + right * position.x * sx + vec3(0.0, position.y * sy, 0.0);
+        gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
+      }`,
+    fragmentShader: `varying vec2 vUv; varying float vPh; uniform float t;
+      float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+      float noise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+        return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y); }
+      float fbm(vec2 p){ return noise(p) * 0.55 + noise(p * 2.1 + 3.1) * 0.3 + noise(p * 4.3 + 7.7) * 0.15; }
+      void main(){
+        float h = vUv.y, x = vUv.x - 0.5;
+        float n = fbm(vec2(x * 4.0 + vPh, h * 3.2 - t * 3.4 + vPh));
+        float width = mix(0.36, 0.03, pow(h, 0.75));
+        float d = abs(x + (n - 0.5) * 0.3 * h) / width;
+        float body = (1.0 - smoothstep(0.35, 1.0, d)) * (1.0 - smoothstep(0.45, 1.0, h + (n - 0.5) * 0.45)) * smoothstep(0.0, 0.12, h);
+        float core = (1.0 - smoothstep(0.0, 0.6, d)) * (1.0 - smoothstep(0.1, 0.55, h));
+        vec3 col = mix(vec3(0.9, 0.18, 0.02), vec3(1.0, 0.55, 0.12), body) + vec3(1.0, 0.85, 0.5) * core;
+        gl_FragColor = vec4(col * body * 1.5, 1.0);
+      }`,
+  });
+  const m = new THREE.Mesh(flameGeo, flameMat);
+  m.frustumCulled = false;   // billboarded in the shader; the quad's own bounds don't apply
+  return m;
+}
+
+// Embers rising from every brazier: one Points object (one draw call) animated entirely in the
+// vertex shader. Each point loops on its own seed; no per-frame CPU work.
+function emberPoints(sources, perSource = 18) {
+  const n = sources.length * perSource, pos = new Float32Array(n * 3), seed = new Float32Array(n);
+  for (let i = 0; i < n; i++) { const s = sources[(i / perSource) | 0]; pos.set([s.x, s.y, s.z], i * 3); seed[i] = Math.random(); }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('seed', new THREE.BufferAttribute(seed, 1));
+  const p = new THREE.Points(g, new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false,
+    uniforms: { t: worldTime, px: { value: Math.min(devicePixelRatio, 2) } },
+    vertexShader: `attribute float seed; uniform float t, px; varying float vA;
+      void main(){
+        float k = fract(t * (0.35 + seed * 0.3) + seed * 17.0);
+        float a = seed * 40.0 + t * (1.5 + seed);
+        vec3 p = position + vec3(sin(a) * 0.35 * k, k * (2.2 + seed * 1.6), cos(a * 0.8) * 0.35 * k);
+        vA = (1.0 - k) * smoothstep(0.0, 0.08, k);
+        vec4 mv = modelViewMatrix * vec4(p, 1.0);
+        gl_PointSize = px * (2.0 + 3.0 * seed) * (6.0 / max(-mv.z, 1.0)) * 1.2;
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: `varying float vA;
+      void main(){ float d = length(gl_PointCoord - 0.5); if (d > 0.5) discard;
+        gl_FragColor = vec4(vec3(1.0, 0.5, 0.15) * vA * (1.0 - d * 2.0) * 1.6, 1.0); }`,
+  }));
+  p.frustumCulled = false;
+  return p;
+}
+
+// Hanging cloth: a cut-out texture (alpha-tested, so no transparency sorting) that sways in the
+// vertex shader, more toward the hem. One material for every banner; phase from world position.
+function swayBanner(mat, height) {
+  mat.onBeforeCompile = (sh) => {
+    sh.uniforms.t = worldTime;
+    sh.vertexShader = 'uniform float t;\n' + sh.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
+      float hang = clamp((${(height / 2).toFixed(3)} - position.y) / ${height.toFixed(3)}, 0.0, 1.0);
+      vec3 o = (modelMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+      float ph = o.x * 1.3 + o.z * 0.7;
+      transformed.z += hang * hang * (0.12 * sin(t * 1.4 + ph + hang * 2.4) + 0.04 * sin(t * 3.3 + ph * 2.0 + position.x * 3.0));`);
+  };
+  mat.customProgramCacheKey = () => 'swayBanner';
+  return mat;
+}
+
 export function mulberry(a) {
   return () => { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
 }
@@ -196,6 +319,38 @@ export class World {
     this.buildMist();
     this.buildLeaves();
     this.buildDetails();
+    this.buildDecals();
+    if (this.emberSrc) this.add(emberPoints(this.emberSrc));
+    this.batchStatic([...(this.houses ?? []), ...(this.statics ?? [])]);
+  }
+
+  // Townhouses are ~60 small primitives each (window panes, arches, jambs, hoods, sills, bands,
+  // quoins): over a thousand draw calls for the street. They never move, so bake them into one
+  // mesh per material. Parts flagged userData.keep (the Tripo doorways) stay as they are.
+  batchStatic(groups = []) {
+    const byMat = new Map();
+    for (const g of groups) {
+      g.updateMatrixWorld(true);
+      const parts = [];
+      g.traverse((o) => { if (o.isMesh && !o.parent.userData.keep && !o.userData.keep) { let p = o; while (p && p !== g) { if (p.userData.keep) return; p = p.parent; } parts.push(o); } });
+      for (const m of parts) {
+        let geo = m.geometry.index ? m.geometry.toNonIndexed() : m.geometry.clone();
+        geo.clearGroups();
+        for (const k of Object.keys(geo.attributes)) if (!['position', 'normal', 'uv'].includes(k)) geo.deleteAttribute(k);
+        if (!geo.attributes.uv) geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(geo.attributes.position.count * 2), 2));
+        geo.applyMatrix4(m.matrixWorld);
+        m.geometry.dispose();
+        const e = byMat.get(m.material) ?? { geos: [], cast: false };
+        e.geos.push(geo); e.cast ||= m.castShadow; byMat.set(m.material, e);
+        m.removeFromParent();
+      }
+    }
+    for (const [mat, { geos, cast }] of byMat) {
+      const merged = new THREE.Mesh(mergeGeometries(geos, false), mat);
+      merged.castShadow = cast; merged.receiveShadow = true;
+      this.add(merged);
+      geos.forEach((g) => g.dispose());
+    }
   }
 
   // Small Tripo set-dressing props (each call is a no-op if that model is missing).
@@ -206,6 +361,7 @@ export class World {
       if (f.z > 60 || f.z < -6 || i % 2) continue;
       const side = Math.sign(f.x) || 1;                 // facade on the east (+) or west (−) side
       const tz = f.z + (i % 4 === 0 ? 1 : -1) * Math.min(3.0, f.w * 0.37);
+      if (this.lampSpots?.some(([lx, lz]) => Math.sign(lx) === side && Math.abs(lz - tz) < 4)) continue;   // a street lamp already lights this stretch
       const m = this.prop('torch', 1.1, f.x - side * 0.2, tz, -side * Math.PI / 2, { y: 2.0 });
       if (m) this.glow(f.x - side * 0.42, 3.0, tz, 0.85, 0xff9a40);
     }
@@ -216,8 +372,8 @@ export class World {
       for (let k = 0; k < 6; k++) { const a = (k / 6) * Math.PI * 2; this.glow(x + Math.cos(a) * 0.62, yTop - h + 0.42, z + Math.sin(a) * 0.62, 0.32); }
       const l = new THREE.PointLight(0xffa050, 10, 14, 1.6); l.position.set(x, yTop - h + 0.3, z); this.add(l); this.flames.push(l);
     }
-    // Candelabras: before the cathedral and beside the lantern shrines.
-    for (const [x, z, y] of [[-5.5, ARENA.z + 17.6, ARENA.y], [5.5, ARENA.z + 17.6, ARENA.y], [5.6, 1.0, 0], [-12.6, 87.8, 0]]) {
+    // Candelabras before the cathedral. (Checkpoint lanterns stand alone: the model carries its own candles.)
+    for (const [x, z, y] of [[-5.5, ARENA.z + 17.6, ARENA.y], [5.5, ARENA.z + 17.6, ARENA.y]]) {
       if (this.prop('candelabra', 1.9, x, z, r() * 6.28, { y, r: 0.35 })) this.glow(x, y + 1.85, z, 0.6, 0xffb060);
     }
     // The Hound's lair: skull piles around the arena edge.
@@ -412,7 +568,7 @@ export class World {
     const g = new THREE.Mesh(new THREE.PlaneGeometry(80, 240), mat);
     g.rotation.x = -Math.PI / 2; g.position.set(0, 0, 90); g.receiveShadow = true;
     this.add(g);
-    this.cobbleMat = mat;
+    this.cobbleMat = wetFloor(mat);
   }
 
   // A narrow gothic townhouse facing the street.
@@ -449,15 +605,17 @@ export class World {
     for (const sx of [-1, 1]) { const q = new THREE.Mesh(new THREE.BoxGeometry(0.35, h, 0.35), this.mat.trim); q.position.set(sx * (w / 2 - 0.1), h / 2, d / 2 - 0.05); q.castShadow = true; g.add(q); }
     // door: carved gothic doorway (Tripo) or a plain plank door.
     const dw = makeEnv('doorway', 3.3);
-    if (dw) { dw.position.set(0, 0, d / 2 + dw.userData.size.z / 2 - 0.25); g.add(dw); }
+    if (dw) { dw.position.set(0, 0, d / 2 + dw.userData.size.z / 2 - 0.25); dw.userData.keep = true; g.add(dw); }
     else { const door = new THREE.Mesh(new THREE.BoxGeometry(1.2, 2.3, 0.2), this.mat.wood); door.position.set(0, 1.15, d / 2); g.add(door); }
     g.position.set(x, 0, z); g.rotation.y = face;
     (this.facades ??= []).push({ x: x + Math.sin(face) * d / 2, z: z + Math.cos(face) * d / 2, w, face });
     this.add(g);
+    (this.houses ??= []).push(g);
   }
 
   lamp(x, z, withLight = true) {
     const y = heightAt(x, z);
+    (this.lampSpots ??= []).push([x, z]);
     const m = makeEnv('lamp', 4.0);
     if (m) { m.position.set(x, y, z); m.rotation.y = x < 0 ? Math.PI / 2 : -Math.PI / 2; this.add(m); }
     else {
@@ -492,8 +650,10 @@ export class World {
       const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.15, 0.9, 6), this.mat.iron);
       leg.position.set(x, y + 0.45, z); this.add(leg);
     }
-    const fire = new THREE.Mesh(new THREE.ConeGeometry(0.3, 0.7, 7), new THREE.MeshBasicMaterial({ color: 0xff7a20, transparent: true, opacity: 0.85 }));
-    fire.position.set(x, y + top + 0.3, z); this.add(fire); this.flames.push(fire);
+    // Shader flame (animates itself), a warm halo over the coals, and embers (built in one batch).
+    const fire = flameMesh(); fire.position.set(x, y + top - 0.12, z); fire.scale.set(1.25, 1.45, 1); this.add(fire);
+    this.glow(x, y + top + 0.15, z, 1.1, 0xff7a30);
+    (this.emberSrc ??= []).push({ x, y: y + top, z });
     if (light) { const l = new THREE.PointLight(0xff7a30, 12, 16, 1.5); l.position.set(x, y + top + 0.7, z); this.add(l); this.flames.push(l); }
     this.colliders.push({ x, z, r: 0.5 });
   }
@@ -628,16 +788,44 @@ export class World {
     return true;
   }
 
+  // Ward banner: painted cloth (public/textures/banner.webp, 501×1536) with a ragged cut-out hem.
+  // Geometry and material are shared by every banner. Until the texture arrives (or if it is
+  // missing) the banner shows as plain dark red cloth.
   banner(x, y, z, ry) {
-    const b = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 3.4, 1, 6), this.mat.banner);
+    if (!this.bannerGeo) {
+      this.bannerGeo = new THREE.PlaneGeometry(1.12, 3.4, 2, 10);
+      const mat = swayBanner(this.mat.banner, 3.4);
+      new THREE.TextureLoader().load('textures/banner.webp', (tex) => {
+        tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 4;
+        mat.map = tex; mat.color.set(0xffffff); mat.alphaTest = 0.5; mat.needsUpdate = true;
+      });
+    }
+    const b = new THREE.Mesh(this.bannerGeo, this.mat.banner);
     b.position.set(x, y, z); b.rotation.y = ry; this.add(b);
-    // pale sigil
-    const sig = new THREE.Mesh(new THREE.RingGeometry(0.22, 0.3, 8), new THREE.MeshBasicMaterial({ color: 0xd8c8a8, side: THREE.DoubleSide }));
-    sig.position.set(0, 0.6, 0.01); b.add(sig);
   }
 
+  // Checkpoint lantern shrine. Tripo model (twisted post, hanging cage, candles and bones at
+  // the base); its amber panes glow once lit. Falls back to the primitive version.
   lantern(x, z, name) {
     const y = heightAt(x, z);
+    const H = 1.6, m = makeEnv('lantern', H);
+    if (m) {
+      // The panes' glow is a per-lantern uniform, so each lantern gets its own material copy
+      // (two lanterns: two extra materials, no extra draw calls).
+      const glow = { value: 0.35 };   // unlit: a faint ember in the panes, so the lantern can be found
+      m.traverse((o) => { if (o.isMesh) { o.material = amberGlowMaterial(o.material, glow); } });
+      // The arm points along model +x; turn it so the cage hangs out over the street.
+      const out = x > 0 ? -1 : 1;
+      m.position.set(x, y, z); m.rotation.y = out > 0 ? 0 : Math.PI; this.add(m);
+      // Cage centre in model space (measured from the GLB): 0.18 H out on the arm, 0.58 H up.
+      const cx = x + out * 0.18 * H, cy = y + 0.58 * H;
+      const light = new THREE.PointLight(0xff6a2a, 0, 10, 1.4); light.position.set(cx, cy, z); this.add(light);
+      const halo = this.glow(cx, cy, z, 0, 0xffa050);
+      const L = { x, z, y, name, lit: false, light, glow, halo };
+      this.lanterns.push(L);
+      this.colliders.push({ x, z, r: 0.35 });
+      return L;
+    }
     const g = new THREE.Group();
     const post = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 1.6, 6), this.mat.iron); post.position.y = 0.8; g.add(post);
     const hook = new THREE.Mesh(new THREE.TorusGeometry(0.15, 0.025, 4, 10, Math.PI), this.mat.iron); hook.position.set(0.15, 1.6, 0); g.add(hook);
@@ -659,14 +847,99 @@ export class World {
 
   lightLantern(L) {
     L.lit = true;
-    L.glass.material.emissiveIntensity = 3;
+    if (L.glass) L.glass.material.emissiveIntensity = 3;
+    if (L.glow) { L.glow.value = 2.4; L.halo.userData.base = 0.7; }
     L.light.intensity = 10;
+  }
+
+  // A secret worth finding: the object itself on the ground under a pale gold wisp (the
+  // item light souls-likes teach players to look for). Red is kept for the bloodstain.
+  // kind: 'shard' (+1 blood vial: a small vial on its side) or 'echoes' (a leather purse).
+  pickup(x, z, kind, amount = 0) {
+    const y = heightAt(x, z);
+    const obj = kind === 'shard' ? this.vialProp() : this.purseProp();
+    obj.position.set(x, y, z); obj.rotation.y = this.rand() * 6.28; this.add(obj);
+    const wisp = this.glow(x, y + 0.45, z, 0.55, 0xffe2b0), core = this.glow(x, y + 0.45, z, 0.16, 0xffffff);
+    (this.pickups ??= []).push({ x, z, kind, amount, taken: false, obj, wisp, core });
+  }
+
+  vialProp() {
+    const v = makeVial({ light: false });
+    v.visible = true; v.scale.setScalar(1.6);
+    v.rotation.set(0, 0, Math.PI / 2 - 0.15); v.position.y = 0.06;   // lying on its side, neck slightly up
+    const g = new THREE.Group(); g.add(v); return g;
+  }
+
+  // A small leather coin purse, cinched with cord, a few coins spilled beside it.
+  purseProp() {
+    const g = new THREE.Group();
+    const leather = (this.leatherMat ??= new THREE.MeshStandardMaterial({ color: 0x4a2c1c, roughness: 0.85 }));
+    const prof = [[0, 0], [0.07, 0.01], [0.1, 0.05], [0.095, 0.1], [0.05, 0.14], [0.03, 0.16], [0.05, 0.19], [0.02, 0.2], [0, 0.2]].map(([a, b]) => new THREE.Vector2(a, b));
+    const bag = new THREE.Mesh(new THREE.LatheGeometry(prof, 12), leather); bag.scale.set(1, 0.85, 1.1); bag.castShadow = true; g.add(bag);
+    const cord = new THREE.Mesh(new THREE.TorusGeometry(0.034, 0.007, 4, 12), new THREE.MeshStandardMaterial({ color: 0x6a1010, roughness: 0.7 }));
+    cord.rotation.x = Math.PI / 2; cord.position.y = 0.135; g.add(cord);
+    const gold = (this.coinMat ??= new THREE.MeshStandardMaterial({ color: 0xc9a050, metalness: 1, roughness: 0.35 }));
+    for (const [cx, cz, t] of [[0.14, 0.04, 0.2], [0.18, -0.03, 0.6], [0.12, -0.08, 1.4]]) {
+      const c = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, 0.005, 10), gold); c.position.set(cx, 0.004, cz); c.rotation.set(0.1, t, 0.05); g.add(c);
+    }
+    return g;
+  }
+
+  // One quad of the decal atlas (0 blood pool, 1 smear, 2 leaves, 3 ash) lying on the ground.
+  decal(k, x, z, size) {
+    const g = new THREE.PlaneGeometry(size, size).rotateX(-Math.PI / 2);
+    const uv = g.attributes.uv, u0 = (k % 2) * 0.5, v0 = k < 2 ? 0.5 : 0;
+    for (let i = 0; i < uv.count; i++) uv.setXY(i, u0 + uv.getX(i) * 0.5, v0 + uv.getY(i) * 0.5);
+    const m = new THREE.Mesh(g, this.decalMat); m.position.set(x, heightAt(x, z) + 0.025, z); m.rotation.y = this.rand() * 6.28; m.receiveShadow = true;
+    return this.add(m);
+  }
+
+  // Where the hunter last fell, holding the echoes he dropped: a pool of his blood with ripples
+  // running across it, a faint column of red light rising from it, and a heartbeat-pulsing core.
+  // (Rising blood motes come from Game.step, which owns the particles.) null clears it.
+  setStain(stain) {
+    if (this.stain) {
+      for (const o of [this.stain.pool, this.stain.wisp, this.stain.core, this.stain.ripple, this.stain.pillar]) o.removeFromParent();
+      this.stain.pool.geometry.dispose();
+      this.glows = this.glows.filter((g) => g !== this.stain.wisp && g !== this.stain.core);
+    }
+    this.stain = null;
+    if (!stain) return;
+    const y = heightAt(stain.x, stain.z);
+    const pool = this.decal(0, stain.x, stain.z, 1.9);
+    this.rippleMat ??= new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false, uniforms: { t: worldTime },
+      vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: `varying vec2 vUv; uniform float t;
+        void main(){ float r = length(vUv - 0.5) * 2.0; float ring = 0.0;
+          for (int i = 0; i < 3; i++) { float k = fract(t * 0.45 + float(i) / 3.0); ring += (1.0 - smoothstep(0.0, 0.06, abs(r - k))) * (1.0 - k); }
+          gl_FragColor = vec4(vec3(0.5, 0.03, 0.02) * ring * (1.0 - smoothstep(0.8, 1.0, r)), 1.0); }`,
+    });
+    const ripple = new THREE.Mesh(this.rippleGeo ??= new THREE.PlaneGeometry(2, 2).rotateX(-Math.PI / 2), this.rippleMat);
+    ripple.position.set(stain.x, y + 0.04, stain.z); this.add(ripple);
+    this.pillarMat ??= new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, fog: false, uniforms: { t: worldTime },
+      vertexShader: `varying vec2 vUv; varying float vEdge;
+        void main(){ vUv = uv; vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          vEdge = abs(dot(normalize(normalMatrix * normal), normalize(-mv.xyz)));   // 1 facing the camera, 0 at the silhouette
+          gl_Position = projectionMatrix * mv; }`,
+      fragmentShader: `varying vec2 vUv; varying float vEdge; uniform float t;
+        void main(){ float h = vUv.y;
+          float streaks = pow(0.5 + 0.5 * sin(vUv.x * 40.0 + sin(h * 6.0 - t * 1.3) * 3.0), 3.0) * (0.5 + 0.5 * sin(h * 14.0 - t * 4.0));
+          float a = pow(1.0 - h, 2.2) * smoothstep(0.0, 0.1, h) * pow(vEdge, 1.5) * (0.35 + 0.65 * streaks) * (0.8 + 0.2 * sin(t * 2.4));
+          gl_FragColor = vec4(vec3(0.2, 0.008, 0.006) * a, 1.0); }`,
+    });
+    const pillar = new THREE.Mesh(this.pillarGeo ??= new THREE.CylinderGeometry(0.12, 0.4, 3, 20, 1, true).translate(0, 1.5, 0), this.pillarMat);
+    pillar.position.set(stain.x, y, stain.z); this.add(pillar);
+    const wisp = this.glow(stain.x, y + 0.5, stain.z, 0.8, 0xff3020), core = this.glow(stain.x, y + 0.5, stain.z, 0.22, 0xffc0b0);
+    this.stain = { ...stain, pool, wisp, core, ripple, pillar };
   }
 
   note(x, z, text) {
     const y = heightAt(x, z);
     const glint = new THREE.Mesh(new THREE.OctahedronGeometry(0.08), new THREE.MeshBasicMaterial({ color: 0xffe6b0 }));
     glint.position.set(x, y + 0.35, z); this.add(glint);
+    this.prop('note', 0.12, x - 0.45, z + 0.2, this.rand() * 6.28, { y });   // the blood-stained letter, dropped beside the body
     if (!this.corpse(x + 0.7, z, this.rand() * 6.28)) {
       const corpse = new THREE.Mesh(new THREE.CapsuleGeometry(0.22, 1.1, 4, 8), new THREE.MeshStandardMaterial({ color: 0x2c2420, roughness: 1 }));
       corpse.rotation.set(Math.PI / 2, 0, this.rand() * 3); corpse.position.set(x + 0.4, y + 0.2, z); corpse.castShadow = true; this.add(corpse);
@@ -689,25 +962,30 @@ export class World {
       this.townhouse(-10.5, z, 8, 5.5 + this.rand(), h, Math.PI / 2);
       this.townhouse(10.5, z + 2, 8, 5.5 + this.rand(), 9 + this.rand() * 7, -Math.PI / 2);
     }
+    this.buildShortcut();
     for (let z = 4; z < 60; z += 11) { this.lamp(-5.4, z); this.lamp(5.4, z + 5.5, z % 2 === 0); }
     this.cart(-3.5, 15, 0.3);
     this.cart(3.2, 44, -2.6);
     this.statue(4.6, 28, -Math.PI / 2, 0.9);
-    for (const [x, z] of [[-4.8, 9], [4.9, 19], [-5, 25], [-4.6, 33], [4.7, 36], [-4.9, 49], [5.1, 55], [-5.1, 56]]) this.clutter(x, z);
+    // Clutter sits in the gaps between street lamps (lamps every 11 m: west z 4+11k, east z 9.5+11k), clear of the shrines.
+    for (const [x, z] of [[-4.8, 9], [4.9, 15], [-5, 21], [4.7, 36], [-4.6, 42.5], [-4.9, 53.5]]) this.clutter(x, z);
     for (let z = 10; z < 58; z += 14) { this.banner(-6.3, 6.5, z, Math.PI / 2); this.banner(6.3, 6.5, z + 7, -Math.PI / 2); }
     for (const [z, side] of [[12, -1], [26, 1], [38, -1], [51, 1]]) this.cage(side * 7.3, z, 6.2, side);
     this.lantern(2.5, 3, 'Ward Gate');
-    this.shrine(4.6, 2.2, -Math.PI / 2); this.shrine(-5.2, 30, Math.PI / 2); this.shrine(5.3, 47.5, -Math.PI / 2);
+    this.note(-5.5, 12.6, 'Pinned beneath the cage, in a hunter\'s cramped hand:<br><br>"Six of us came through the Ward Gate. The cages were empty then. Count them as you pass, and do not look up for long."');
+    this.shrine(-5.2, 30, Math.PI / 2); this.shrine(5.3, 47.5, -Math.PI / 2);
     this.note(-3.6, 21, 'A ledger page, the ink still tacky.<br><br>"Saint Orlan\'s Ward — sealed at the ninth bell. Names counted: four hundred and twelve. Names spared: none.<br><br>Sentence carried out by the hand that signs below."<br><br>The signature is yours.');
   }
 
   buildPlaza() {
     // Plaza enclosure walls and houses.
+    // Enclosure: the Tripo gothic wall kit along the walkable edge (x ±15.5, z 92), or plain slabs.
+    const kit = ['wall_niche', 'wall_buttress', 'wall_niche', 'wall_buttress', 'wall_niche'];
     for (const s of [-1, 1]) {
-      this.box(1.5, 7, 34, this.mat.darkStone, s * 16.3, 3.5, 75);
+      if (!this.wallRun(s * 15.5, 58, s * 15.5, 92, kit, -s, 0)) this.box(1.5, 7, 34, this.mat.darkStone, s * 16.3, 3.5, 75);
       for (let z = 62; z < 90; z += 7) this.townhouse(s * 21, z, 8, 6, 12 + this.rand() * 6, s < 0 ? Math.PI / 2 : -Math.PI / 2);
     }
-    for (const s of [-1, 1]) this.box(10, 7, 1.5, this.mat.darkStone, s * 11, 3.5, 92.5);
+    for (const s of [-1, 1]) if (!this.wallRun(s * 5.4, 92, s * 17, 92, ['wall_niche', 'wall_niche'], 0, -1)) this.box(10, 7, 1.5, this.mat.darkStone, s * 11, 3.5, 92.5);
     // Cistern fountain with blood-dark water.
     const fountain = makeEnv('fountain', 7.2);
     if (fountain) { fountain.position.set(0, 0, 74); fountain.rotation.y = Math.PI; this.add(fountain); }
@@ -719,29 +997,34 @@ export class World {
       this.statue(0, 74, Math.PI, 1.3);
     }
     this.colliders.push({ x: 0, z: 74, r: 4.4 });
-    this.brazier(-12, 64); this.brazier(12, 64); this.brazier(-12.5, 86, false); this.brazier(12.5, 86);
-    for (const [x, z] of [[-13, 70], [13.5, 77], [-8, 88], [9, 60.5], [-14, 81]]) this.clutter(x, z);
+    this.brazier(-12, 64); this.brazier(12, 64); this.brazier(-12.5, 86); this.brazier(12.5, 86);
+    for (const [x, z] of [[-13, 70], [13.5, 77], [9, 60.5], [-14, 81]]) this.clutter(x, z);
     this.cart(10, 82, 1.2);
+    // Secrets: a vial shard tucked behind the cart, a hunter's purse among the graves.
+    this.pickup(11.7, 83.8, 'shard');
+    this.pickup(-13.6, 66.6, 'echoes', 600);
     this.tree(-13.2, 61, 10); this.tree(13, 89.5, 8.5);
     this.statue(-14.5, 75, Math.PI / 2, 0.9); this.statue(14.5, 70, -Math.PI / 2, 0.9);
     this.lantern(-10, 89, 'Cathedral Steps');
-    this.shrine(-12.4, 89.4, Math.PI / 2);
     this.note(11.5, 71, 'A Seer\'s prayer, scratched into a vial:<br><br>"Grace was given to close the wound. We drank, and the wound opened inward. The blood remembers who spilled it — and so it follows him."');
   }
 
   buildSteps() {
-    const steps = 16;
+    const steps = 16, stair = this.add(new THREE.Group()); (this.statics ??= []).push(stair);   // baked by batchStatic
     for (let i = 0; i < steps; i++) {
       const z0 = 93 + (i / steps) * 8;
       const h = ((i + 1) / steps) * ARENA.y;
       const s = new THREE.Mesh(new THREE.BoxGeometry(10.4, h, 8 / steps + 0.02), this.mat.stone);
-      s.position.set(0, h / 2, z0 + 4 / steps); s.receiveShadow = true; s.castShadow = true; this.add(s);
+      s.position.set(0, h / 2, z0 + 4 / steps); s.receiveShadow = true; s.castShadow = true; stair.add(s);
     }
     // Landing + passage floor up to the arena.
     const landing = new THREE.Mesh(new THREE.BoxGeometry(10.4, ARENA.y, 12), this.mat.stone);
     landing.position.set(0, ARENA.y / 2, 107); landing.receiveShadow = true; this.add(landing);
     for (const s of [-1, 1]) {
-      this.box(1, 9, 20, this.mat.darkStone, s * 5.8, ARENA.y + 2.5, 103);
+      // Wall kit beside the stairs and along the landing to the fog gate; plain slab without it.
+      const kit = this.wallRun(s * 5.2, 93, s * 5.2, 101, ['wall_niche'], -s, 0, { H: 9.4 })
+        && this.wallRun(s * 5.2, 101, s * 5.2, 113, ['wall_niche', 'wall_niche'], -s, 0, { y: ARENA.y, H: 7 });
+      if (!kit) this.box(1, 9, 20, this.mat.darkStone, s * 5.8, ARENA.y + 2.5, 103);
       this.statue(s * 4.4, 101.5, s > 0 ? -Math.PI / 2 : Math.PI / 2, 0.8);
     }
     this.lamp(-4.6, 96); this.lamp(4.6, 96, false);
@@ -774,7 +1057,7 @@ export class World {
 
   buildArena() {
     const y = ARENA.y;
-    const floor = new THREE.Mesh(new THREE.CircleGeometry(ARENA.r + 2, 48), this.cobbleMat.clone());
+    const floor = new THREE.Mesh(new THREE.CircleGeometry(ARENA.r + 2, 48), wetFloor(this.cobbleMat.clone()));
     floor.material.map = this.cobbleMat.map.clone(); floor.material.map.repeat.set(15, 15); floor.material.map.needsUpdate = true;
     floor.material.roughnessMap = this.cobbleMat.roughnessMap.clone(); floor.material.roughnessMap.repeat.set(15, 15); floor.material.roughnessMap.needsUpdate = true;
     floor.material.normalMap = this.cobbleMat.normalMap.clone(); floor.material.normalMap.repeat.set(15, 15); floor.material.normalMap.needsUpdate = true;
@@ -863,27 +1146,109 @@ export class World {
     // Arena braziers.
     for (const a of [0.6, 2.55, 3.7, 5.7]) this.brazier(ARENA.x + Math.cos(a) * (ARENA.r - 2), ARENA.z + Math.sin(a) * (ARENA.r - 2), a < 3);
     this.tree(ARENA.x - 25, ARENA.z - 4, 11); this.tree(ARENA.x + 24, ARENA.z + 6, 9.5);
-    // Bones and claw-gouges scattered about.
-    for (let i = 0; i < 26; i++) {
-      const a = this.rand() * Math.PI * 2, r = 3 + this.rand() * (ARENA.r - 4);
-      const b = new THREE.Mesh(new THREE.CapsuleGeometry(0.04, 0.35 + this.rand() * 0.3, 2, 4), this.mat.bone);
-      b.position.set(ARENA.x + Math.cos(a) * r, y + 0.05, ARENA.z + Math.sin(a) * r);
-      b.rotation.set(Math.PI / 2, 0, this.rand() * 6); this.add(b);
+    // The Hound's leavings: a few small bone heaps on the floor (no colliders, so they never snag
+    // a dodge). Falls back to loose capsule bones without the model.
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2 + this.rand() * 0.8, r = 5 + this.rand() * (ARENA.r - 9);
+      const bx = ARENA.x + Math.cos(a) * r, bz = ARENA.z + Math.sin(a) * r;
+      if (this.prop('bones', 0.3 + this.rand() * 0.15, bx, bz, this.rand() * 6.28, { y })) continue;
+      const b = new THREE.Mesh(new THREE.CapsuleGeometry(0.04, 0.45, 2, 4), this.mat.bone);
+      b.position.set(bx, y + 0.05, bz); b.rotation.set(Math.PI / 2, 0, this.rand() * 6); this.add(b);
     }
   }
 
+  // Veyr beyond the ward: a painted skyline (public/textures/skyline.webp, keyed out of
+  // art/refs/skyline.png) on one open cylinder around the level. One draw call; alpha-tested.
+  // Beyond the fog's reach, so it skips fog and is tinted toward the night haze instead.
+  // Hidden until the texture arrives, so a missing file just leaves open sky.
   buildDistantCity() {
-    // Silhouette spires around the level for a sense of Veyr beyond the ward.
-    const mat = new THREE.MeshBasicMaterial({ color: 0x07070b, fog: true });
-    const lit = new THREE.MeshBasicMaterial({ color: 0xffa050 });
-    for (let i = 0; i < 70; i++) {
-      const a = this.rand() * Math.PI * 2, r = 90 + this.rand() * 120;
-      const x = Math.cos(a) * r, z = 90 + Math.sin(a) * r;
-      const h = 20 + this.rand() * 50, w = 6 + this.rand() * 10;
-      const t = new THREE.Mesh(new THREE.BoxGeometry(w, h, w), mat); t.position.set(x, h / 2 - 5, z); this.add(t);
-      const s = new THREE.Mesh(new THREE.ConeGeometry(w * 0.6, h * 0.5, 6), mat); s.position.set(x, h - 5 + h * 0.25, z); this.add(s);
-      if (this.rand() < 0.5) { const wv = new THREE.Mesh(new THREE.PlaneGeometry(1, 2), lit); wv.position.set(x, h * 0.6, z); wv.lookAt(0, h * 0.6, 60); this.add(wv); }
+    const R = 170, tiles = 4, aspect = 2048 / 587, H = (2 * Math.PI * R) / tiles / aspect;
+    const mat = new THREE.MeshBasicMaterial({ color: 0x9aa4bc, side: THREE.BackSide, alphaTest: 0.5, fog: false, visible: false });
+    const ring = new THREE.Mesh(new THREE.CylinderGeometry(R, R, H, 64, 1, true), mat);
+    ring.position.set(0, H / 2 - 14, 70);
+    this.add(ring);
+    new THREE.TextureLoader().load('textures/skyline.webp', (tex) => {
+      tex.colorSpace = THREE.SRGBColorSpace; tex.wrapS = THREE.RepeatWrapping; tex.repeat.set(tiles, 1);
+      mat.map = tex; mat.visible = true; mat.needsUpdate = true;
+    });
+  }
+
+  // Shortcut: the first east townhouse gives way to a passage with an iron gate; behind it a back
+  // alley runs north behind the houses into the plaza's east corner. The gate opens only from
+  // the alley side, so the loop pays off on the way back: plaza → alley → the Ward Gate lantern.
+  buildShortcut() {
+    const i = this.facades.findIndex((f) => f.x > 0 && f.z < 0);   // the first east house (built, then cleared, so the layout's randomness is unchanged)
+    if (i >= 0) {
+      const f = this.facades[i], h = this.houses.find((g) => Math.abs(g.position.x - 10.5) < 0.01 && Math.abs(g.position.z - f.z) < 0.01);
+      h?.removeFromParent(); this.houses = this.houses.filter((g) => g !== h); this.facades.splice(i, 1);
     }
+    // Walls: the passage's two sides, and the long east side of the alley (the house backs are the west side).
+    this.wallRun(6.2, -7.2, 16.4, -7.2, ['wall_niche', 'wall_niche'], 0, 1, { maxDepth: 1.5 });
+    this.wallRun(7.7, -2.3, 14.2, -2.3, ['wall_niche'], 0, -1, { maxDepth: 1.2 });
+    const alley = []; for (let k = 0; k < 10; k++) alley.push(k % 2 ? 'wall_buttress' : 'wall_niche');
+    this.wallRun(16.2, -7.2, 16.2, 58, alley, -1, 0, { maxDepth: 1.6 });
+    this.lamp(15.75, 26);
+    // The gate: a wrought-iron fence section on a hinge at its south end; swings into the alley.
+    const hinge = this.add(new THREE.Group()); hinge.position.set(SHORTCUT.x, 0, SHORTCUT.z0);
+    const W = SHORTCUT.z1 - SHORTCUT.z0, bars = makeEnv('fence', 2.6);
+    if (bars) { bars.scale.x *= W / bars.userData.size.x; bars.rotation.y = -Math.PI / 2; bars.position.set(0, 0, W / 2); hinge.add(bars); }
+    else { const b = new THREE.Mesh(new THREE.BoxGeometry(0.12, 2.6, W), this.mat.iron); b.position.set(0, 1.3, W / 2); hinge.add(b); }
+    this.shortcut = { hinge, open: 0 };
+  }
+
+  openShortcut() { this.shortcutOpen = true; }
+
+  // A run of gothic wall-kit pieces whose FRONT faces lie on the line (x0,z0)→(x1,z1), facing
+  // (fx, fz). Pieces are stretched along the run to fit it exactly and squashed in depth to
+  // maxDepth so buttresses never reach into walkable space. False when a model is missing.
+  wallRun(x0, z0, x1, z1, names, fx, fz, { H = 7, maxDepth = 2.5, y = 0 } = {}) {
+    const pieces = names.map((n) => makeEnv(n, H));
+    if (pieces.some((p) => !p)) return false;
+    const L = Math.hypot(x1 - x0, z1 - z0), ux = (x1 - x0) / L, uz = (z1 - z0) / L;
+    const k = L / pieces.reduce((a, p) => a + p.userData.size.x, 0);
+    let at = 0;
+    for (const p of pieces) {
+      const len = p.userData.size.x * k, sz = Math.min(1, maxDepth / p.userData.size.z), dep = p.userData.size.z * sz;
+      p.scale.x *= k; p.scale.z *= sz;
+      p.rotation.y = Math.atan2(fx, fz);
+      const c = at + len / 2;
+      p.position.set(x0 + ux * c - fx * dep / 2, y, z0 + uz * c - fz * dep / 2);
+      this.add(p); at += len;
+    }
+    return true;
+  }
+
+  // Ground decals from one 2×2 atlas (public/textures/decals.webp): 0 blood pool, 1 blood smear,
+  // 2 dead leaves, 3 ash. Placed where the story leaves them (blood by the dead and in the
+  // Hound's courtyard, ash under braziers, leaves against walls and trees), then merged into a
+  // single mesh: one draw call, alpha-tested, pulled toward the camera so it never z-fights.
+  buildDecals() {
+    const r = this.rand, spots = [];
+    const put = (k, x, z, size) => spots.push({ k, x, z, size });
+    for (const [x, z] of [[-2.8, 11], [3.4, 23], [-4.2, 37.5], [2.2, 50], [6.5, 66], [-5.5, 81]]) put(0, x + 0.7, z + 0.4, 1.7);
+    for (const [x, z] of [[1.4, 16], [-1.6, 30], [0.8, 44]]) put(1, x, z, 2.6);
+    for (const [x, z] of [[-11.7, 62], [11.5, 88], [-6.2, 6], [6.1, 27], [-6.3, 46], [6.2, 57]]) put(2, x, z, 2.2);
+    for (const [x, z] of [[-12, 64], [12, 64], [-12.5, 86], [12.5, 86]]) put(3, x, z, 2.6);
+    for (const a of [0.6, 2.55, 3.7, 5.7]) put(3, ARENA.x + Math.cos(a) * (ARENA.r - 2), ARENA.z + Math.sin(a) * (ARENA.r - 2), 2.6);
+    for (let i = 0; i < 7; i++) {
+      const a = r() * Math.PI * 2, d = 3 + r() * (ARENA.r - 6);
+      put(i < 3 ? 0 : 1, ARENA.x + Math.cos(a) * d, ARENA.z + Math.sin(a) * d, i < 3 ? 2.2 : 3.2);
+    }
+    const geos = spots.map(({ k, x, z, size }) => {
+      const g = new THREE.PlaneGeometry(size, size).rotateX(-Math.PI / 2).rotateY(r() * Math.PI * 2);
+      g.translate(x, heightAt(x, z) + 0.02, z);
+      const uv = g.attributes.uv, u0 = (k % 2) * 0.5, v0 = k < 2 ? 0.5 : 0;
+      for (let i = 0; i < uv.count; i++) uv.setXY(i, u0 + uv.getX(i) * 0.5, v0 + uv.getY(i) * 0.5);
+      return g;
+    });
+    const mat = (this.decalMat = new THREE.MeshStandardMaterial({ roughness: 0.55, alphaTest: 0.5, polygonOffset: true, polygonOffsetFactor: -2, visible: false }));
+    const mesh = new THREE.Mesh(mergeGeometries(geos, false), mat);
+    mesh.receiveShadow = true; this.add(mesh);
+    geos.forEach((g) => g.dispose());
+    new THREE.TextureLoader().load('textures/decals.webp', (tex) => {
+      tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 4;
+      mat.map = tex; mat.visible = true; mat.needsUpdate = true;
+    });
   }
 
   buildAsh() {
@@ -898,15 +1263,15 @@ export class World {
 
   // Resolve a circle moving from (x,z) to (nx,nz): slide along walls and push out of props.
   move(pos, nx, nz, r) {
-    const o = this.gateOpen, s = this.gateSealed;
-    if (inside(nx, nz, r, o, s)) { pos.x = nx; pos.z = nz; }
-    else if (inside(nx, pos.z, r, o, s)) pos.x = nx;
-    else if (inside(pos.x, nz, r, o, s)) pos.z = nz;
+    const o = this.gateOpen, s = this.gateSealed, b = !this.shortcutOpen;
+    if (inside(nx, nz, r, o, s, b)) { pos.x = nx; pos.z = nz; }
+    else if (inside(nx, pos.z, r, o, s, b)) pos.x = nx;
+    else if (inside(pos.x, nz, r, o, s, b)) pos.z = nz;
     for (const c of this.colliders) {
       const dx = pos.x - c.x, dz = pos.z - c.z, d = Math.hypot(dx, dz), m = c.r + r;
       if (d < m && d > 1e-4) {
         const px = c.x + (dx / d) * m, pz = c.z + (dz / d) * m;
-        if (inside(px, pz, r, o, s)) { pos.x = px; pos.z = pz; }
+        if (inside(px, pz, r, o, s, b)) { pos.x = px; pos.z = pz; }
       }
     }
     pos.y = heightAt(pos.x, pos.z);
@@ -914,6 +1279,9 @@ export class World {
 
   update(dt, center) {
     this.time += dt;
+    worldTime.value = this.time;
+    if (this.shortcutOpen && this.shortcut && this.shortcut.open < 1) { this.shortcut.open = Math.min(1, this.shortcut.open + dt * 0.6); this.shortcut.hinge.rotation.y = (Math.PI / 2) * 0.92 * (1 - (1 - this.shortcut.open) ** 3); }
+    for (const L of this.lanterns) if (L.lit && L.glow) L.glow.value = 2.4 * (0.9 + Math.random() * 0.15);
     for (const f of this.flames) {
       if (f.isLight) {
         f.userData.base ??= f.intensity;
@@ -925,6 +1293,18 @@ export class World {
     for (const [i, g] of (this.glows || []).entries()) g.scale.setScalar(g.userData.base * (0.88 + Math.sin(this.time * 13 + i * 1.7) * 0.06 + Math.random() * 0.08));
     for (const m of this.mist) { m.material.uniforms.t.value = this.time; m.material.uniforms.cam.value.copy(center); }
     this.rose.material.uniforms.t.value = this.time;
+    for (const k of this.pickups ?? []) {
+      k.obj.visible = k.wisp.visible = k.core.visible = !k.taken;
+      const yy = heightAt(k.x, k.z) + 0.42 + Math.sin(this.time * 2.2 + k.x) * 0.07;
+      k.wisp.position.y = k.core.position.y = yy;
+    }
+    if (this.stain) {
+      // Heartbeat: two quick beats, then rest.
+      const ph = (this.time * 1.1) % 1, beat = Math.exp(-((ph - 0.08) ** 2) / 0.002) + 0.7 * Math.exp(-((ph - 0.26) ** 2) / 0.002);
+      const S = this.stain, yy = heightAt(S.x, S.z) + 0.5 + Math.sin(this.time * 1.7) * 0.06;
+      S.wisp.position.y = S.core.position.y = yy;
+      S.wisp.userData.base = 0.75 + beat * 0.45; S.core.userData.base = 0.2 + beat * 0.14;
+    }
     for (const n of this.notes) { n.glint.rotation.y += dt * 2; n.glint.visible = !n.read; n.glint.position.y = heightAt(n.x, n.z) + 0.35 + Math.sin(this.time * 3) * 0.05; }
     // Ash drifts with the wind and wraps around the camera.
     const p = this.ash.geometry.attributes.position;
