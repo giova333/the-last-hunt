@@ -14,13 +14,20 @@ canvas#game { position: fixed; inset: 0; width: 100%; height: 100%; display: blo
 #bars { position: absolute; left: 32px; top: 28px; display: flex; flex-direction: column; gap: 6px; }
 .bar { position: relative; height: 12px; background: rgba(0,0,0,.6); border: 1px solid rgba(201,164,106,.45); overflow: hidden; }
 .bar .fill, .bar .rally, .bar .trail { position: absolute; left: 0; top: 0; bottom: 0; transform-origin: left; }
-.bar.hp { width: 340px; }
-.bar.hp .fill { width: 100%; background: linear-gradient(#b52a2a, #6d1010); }
+/* Ornate frame (public/ui/hud_frame.webp, 1024×94) as a 9-slice: the thorny end caps stay
+   crisp, the plain middle stretches to any width. Its black interior is the bar's backdrop;
+   fills sit in the padding box, inside the frame. Static image: no per-frame cost. */
+.bar.framed { overflow: visible; background: none; border-style: solid; border-color: transparent; border-image: url('../ui/hud_frame.webp') 31 130 32 130 fill / 1 / 0 stretch; }
+.bar.hp { width: 340px; height: 24px; border-width: 6px 25px; }
+/* The frame's black interior starts ~0.58 of the way into each end cap: run the fills out to it. */
+.bar.framed .fill, .bar.framed .rally, .bar.framed .trail { left: calc(-1 * var(--ext, 11px)); width: calc(100% + 2 * var(--ext, 11px)) !important; }
+.bar.hp .fill { width: 100%; background: linear-gradient(#d8402e, #9a1a16 45%, #560a0a); box-shadow: inset 0 1px 0 rgba(255,190,160,.35); }
 .bar.hp .rally { width: 100%; background: #e0b070; opacity: .55; }
-.bar.st { width: 260px; height: 8px; }
-.bar.st .fill { width: 100%; background: linear-gradient(#7aa36a, #3f6234); }
+.bar.st { width: 260px; height: 18px; border-width: 5px 21px; --ext: 9px; }
+.bar.st .fill { width: 100%; background: linear-gradient(#a6b86a, #5e7a38 50%, #2f4420); box-shadow: inset 0 1px 0 rgba(230,240,190,.3); }
 #vials { position: absolute; left: 32px; bottom: 32px; display: flex; align-items: center; gap: 10px; font-family: Cinzel, serif; font-size: 22px; text-shadow: 0 0 6px #000; }
-.vial-icon { width: 18px; height: 30px; border-radius: 4px 4px 9px 9px; background: linear-gradient(transparent 25%, var(--blood-hi) 25%); border: 2px solid var(--gold); }
+.vial-icon { width: 24px; height: 39px; background: url('../ui/vial.webp') center/contain no-repeat; filter: drop-shadow(0 0 4px rgba(200,30,20,.55)); transition: filter .3s; }
+.vial-icon.empty { filter: grayscale(1) brightness(.75); opacity: .6; }
 #echoes { position: absolute; right: 36px; bottom: 32px; font-family: Cinzel, serif; font-size: 22px; text-shadow: 0 0 6px #000; }
 #echoes small { font-size: 13px; opacity: .7; }
 #prompt { position: absolute; left: 50%; bottom: 22%; transform: translateX(-50%); font-family: Cinzel, serif; font-size: 18px; letter-spacing: 1px; background: rgba(0,0,0,.55); padding: 6px 18px; border-top: 1px solid var(--gold); border-bottom: 1px solid var(--gold); opacity: 0; transition: opacity .2s; }
@@ -30,7 +37,7 @@ canvas#game { position: fixed; inset: 0; width: 100%; height: 100%; display: blo
 #lock { position: absolute; width: 14px; height: 14px; margin: -7px 0 0 -7px; border: 2px solid #fff; border-radius: 50%; box-shadow: 0 0 8px var(--blood-hi); display: none; }
 #boss { position: absolute; left: 50%; bottom: 70px; transform: translateX(-50%); width: min(720px, 80vw); }
 #boss .name { font-family: Cinzel, serif; font-size: 18px; margin-bottom: 4px; text-shadow: 0 0 6px #000; }
-.bar.boss-hp { height: 10px; width: 100%; }
+.bar.boss-hp { height: 22px; width: 100%; border-width: 6px 25px; }
 .bar.boss-hp .fill { width: 100%; background: linear-gradient(#a32020, #5c0c0c); }
 .bar.boss-hp .trail { width: 100%; background: #d9b56f; transition: transform .8s ease-out .35s; }
 #vignette { position: absolute; inset: 0; background: radial-gradient(ellipse at center, transparent 55%, rgba(120,0,0,.0) 70%, rgba(80,0,0,.0) 100%); transition: background .3s; }

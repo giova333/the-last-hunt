@@ -11,6 +11,7 @@ export class UI {
     this.st = $('.bar.st .fill');
     this.stBar = $('.bar.st');
     this.vials = $('#vial-count');
+    this.vialIcon = $('#vials .vial-icon');
     this.echoes = $('#echo-count');
     this.prompt = $('#prompt');
     this.area = $('#area-title');
@@ -71,6 +72,7 @@ export class UI {
     this.rally.style.transform = `scaleX(${Math.min(1, (p.hp + p.rally) / p.maxHp)})`;
     this.st.style.transform = `scaleX(${Math.max(0, p.stamina / p.maxStamina)})`;
     this.vials.textContent = p.vials;
+    this.vialIcon.classList.toggle('empty', p.vials === 0);
     this.echoes.textContent = p.echoes;
     this.poison.classList.toggle('on', p.poison > 0);
     if (boss) {

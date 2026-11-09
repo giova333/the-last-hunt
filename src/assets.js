@@ -100,7 +100,7 @@ export function hasModel(name) { return !!loaded[name]; }
 
 // Environment props (Tripo text-to-model → tools/build_env.py: origin at the base, unit size).
 // Tripo's models face +X; makeEnv() turns them to face +Z and scales them to a height in metres.
-export const ENV = Object.fromEntries(['statue', 'lamp', 'doorway', 'balustrade', 'cart', 'cage', 'tree', 'coffins', 'pillar', 'brazier', 'archway', 'fountain', 'gate', 'shrine', 'cathedral', 'torch', 'candelabra', 'chandelier', 'barrels', 'crates', 'bones', 'tombstone', 'corpse', 'gargoyle', 'fence'].map((n) => [n, { url: `models/env/${n}.glb` }]));
+export const ENV = Object.fromEntries(['statue', 'lamp', 'doorway', 'balustrade', 'cart', 'cage', 'tree', 'coffins', 'pillar', 'brazier', 'archway', 'fountain', 'gate', 'shrine', 'cathedral', 'torch', 'candelabra', 'chandelier', 'barrels', 'crates', 'bones', 'tombstone', 'corpse', 'gargoyle', 'fence', 'lantern'].map((n) => [n, { url: `models/env/${n}.glb` }]));
 const envPrepared = new Set();
 export function makeEnv(name, height) {
   const gltf = loaded[name];

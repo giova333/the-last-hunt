@@ -151,6 +151,109 @@ function lightConeMaterial(color, strength) {
   });
 }
 
+// One clock for every animated world shader (flames, embers, banner sway); World.update ticks it.
+const worldTime = { value: 0 };
+
+// A copy of a textured standard material whose amber/orange texels (the lantern's glass panes)
+// emit light, scaled by the shared `glow` uniform. The mask comes from the texture colour, so
+// the iron, wax and bone stay unlit. Linear-space values: amber ≈ (0.7, 0.32, 0.05).
+function amberGlowMaterial(src, glow) {
+  const m = src.clone();
+  m.onBeforeCompile = (sh) => {
+    sh.uniforms.uGlow = glow;
+    sh.fragmentShader = 'uniform float uGlow;\n' + sh.fragmentShader.replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+      float amber = smoothstep(0.3, 0.45, diffuseColor.r - diffuseColor.b) * (1.0 - smoothstep(0.15, 0.3, diffuseColor.b));
+      totalEmissiveRadiance += diffuseColor.rgb * amber * uGlow;`);
+  };
+  m.customProgramCacheKey = () => 'amberGlow';
+  return m;
+}
+
+// Brazier fire: a camera-facing (Y-axis) quad with a procedural noise flame. One material and
+// one geometry shared by every brazier; each flame's phase comes from its world position, so
+// they never flicker in sync. Additive, no depth write, no lights: as cheap as the old cone.
+let flameMat, flameGeo;
+function flameMesh() {
+  flameGeo ??= new THREE.PlaneGeometry(1, 1).translate(0, 0.5, 0);
+  flameMat ??= new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false,
+    uniforms: { t: worldTime },
+    vertexShader: `varying vec2 vUv; varying float vPh;
+      void main(){
+        vUv = uv;
+        vec3 c = (modelMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+        vPh = c.x * 1.7 + c.z * 0.9;
+        vec3 toCam = cameraPosition - c; toCam.y = 0.0; toCam = normalize(toCam + vec3(1e-4, 0.0, 0.0));
+        vec3 right = vec3(toCam.z, 0.0, -toCam.x);
+        float sx = length(modelMatrix[0].xyz), sy = length(modelMatrix[1].xyz);
+        vec3 wp = c + right * position.x * sx + vec3(0.0, position.y * sy, 0.0);
+        gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
+      }`,
+    fragmentShader: `varying vec2 vUv; varying float vPh; uniform float t;
+      float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+      float noise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+        return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y); }
+      float fbm(vec2 p){ return noise(p) * 0.55 + noise(p * 2.1 + 3.1) * 0.3 + noise(p * 4.3 + 7.7) * 0.15; }
+      void main(){
+        float h = vUv.y, x = vUv.x - 0.5;
+        float n = fbm(vec2(x * 4.0 + vPh, h * 3.2 - t * 3.4 + vPh));
+        float width = mix(0.36, 0.03, pow(h, 0.75));
+        float d = abs(x + (n - 0.5) * 0.3 * h) / width;
+        float body = (1.0 - smoothstep(0.35, 1.0, d)) * (1.0 - smoothstep(0.45, 1.0, h + (n - 0.5) * 0.45)) * smoothstep(0.0, 0.12, h);
+        float core = (1.0 - smoothstep(0.0, 0.6, d)) * (1.0 - smoothstep(0.1, 0.55, h));
+        vec3 col = mix(vec3(0.9, 0.18, 0.02), vec3(1.0, 0.55, 0.12), body) + vec3(1.0, 0.85, 0.5) * core;
+        gl_FragColor = vec4(col * body * 1.5, 1.0);
+      }`,
+  });
+  const m = new THREE.Mesh(flameGeo, flameMat);
+  m.frustumCulled = false;   // billboarded in the shader; the quad's own bounds don't apply
+  return m;
+}
+
+// Embers rising from every brazier: one Points object (one draw call) animated entirely in the
+// vertex shader. Each point loops on its own seed; no per-frame CPU work.
+function emberPoints(sources, perSource = 18) {
+  const n = sources.length * perSource, pos = new Float32Array(n * 3), seed = new Float32Array(n);
+  for (let i = 0; i < n; i++) { const s = sources[(i / perSource) | 0]; pos.set([s.x, s.y, s.z], i * 3); seed[i] = Math.random(); }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('seed', new THREE.BufferAttribute(seed, 1));
+  const p = new THREE.Points(g, new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false,
+    uniforms: { t: worldTime, px: { value: Math.min(devicePixelRatio, 2) } },
+    vertexShader: `attribute float seed; uniform float t, px; varying float vA;
+      void main(){
+        float k = fract(t * (0.35 + seed * 0.3) + seed * 17.0);
+        float a = seed * 40.0 + t * (1.5 + seed);
+        vec3 p = position + vec3(sin(a) * 0.35 * k, k * (2.2 + seed * 1.6), cos(a * 0.8) * 0.35 * k);
+        vA = (1.0 - k) * smoothstep(0.0, 0.08, k);
+        vec4 mv = modelViewMatrix * vec4(p, 1.0);
+        gl_PointSize = px * (2.0 + 3.0 * seed) * (6.0 / max(-mv.z, 1.0)) * 1.2;
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: `varying float vA;
+      void main(){ float d = length(gl_PointCoord - 0.5); if (d > 0.5) discard;
+        gl_FragColor = vec4(vec3(1.0, 0.5, 0.15) * vA * (1.0 - d * 2.0) * 1.6, 1.0); }`,
+  }));
+  p.frustumCulled = false;
+  return p;
+}
+
+// Hanging cloth: a cut-out texture (alpha-tested, so no transparency sorting) that sways in the
+// vertex shader, more toward the hem. One material for every banner; phase from world position.
+function swayBanner(mat, height) {
+  mat.onBeforeCompile = (sh) => {
+    sh.uniforms.t = worldTime;
+    sh.vertexShader = 'uniform float t;\n' + sh.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
+      float hang = clamp((${(height / 2).toFixed(3)} - position.y) / ${height.toFixed(3)}, 0.0, 1.0);
+      vec3 o = (modelMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+      float ph = o.x * 1.3 + o.z * 0.7;
+      transformed.z += hang * hang * (0.12 * sin(t * 1.4 + ph + hang * 2.4) + 0.04 * sin(t * 3.3 + ph * 2.0 + position.x * 3.0));`);
+  };
+  mat.customProgramCacheKey = () => 'swayBanner';
+  return mat;
+}
+
 export function mulberry(a) {
   return () => { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
 }
@@ -196,6 +299,7 @@ export class World {
     this.buildMist();
     this.buildLeaves();
     this.buildDetails();
+    if (this.emberSrc) this.add(emberPoints(this.emberSrc));
   }
 
   // Small Tripo set-dressing props (each call is a no-op if that model is missing).
@@ -206,6 +310,7 @@ export class World {
       if (f.z > 60 || f.z < -6 || i % 2) continue;
       const side = Math.sign(f.x) || 1;                 // facade on the east (+) or west (−) side
       const tz = f.z + (i % 4 === 0 ? 1 : -1) * Math.min(3.0, f.w * 0.37);
+      if (this.lampSpots?.some(([lx, lz]) => Math.sign(lx) === side && Math.abs(lz - tz) < 4)) continue;   // a street lamp already lights this stretch
       const m = this.prop('torch', 1.1, f.x - side * 0.2, tz, -side * Math.PI / 2, { y: 2.0 });
       if (m) this.glow(f.x - side * 0.42, 3.0, tz, 0.85, 0xff9a40);
     }
@@ -216,8 +321,8 @@ export class World {
       for (let k = 0; k < 6; k++) { const a = (k / 6) * Math.PI * 2; this.glow(x + Math.cos(a) * 0.62, yTop - h + 0.42, z + Math.sin(a) * 0.62, 0.32); }
       const l = new THREE.PointLight(0xffa050, 10, 14, 1.6); l.position.set(x, yTop - h + 0.3, z); this.add(l); this.flames.push(l);
     }
-    // Candelabras: before the cathedral and beside the lantern shrines.
-    for (const [x, z, y] of [[-5.5, ARENA.z + 17.6, ARENA.y], [5.5, ARENA.z + 17.6, ARENA.y], [5.6, 1.0, 0], [-12.6, 87.8, 0]]) {
+    // Candelabras before the cathedral. (Checkpoint lanterns stand alone: the model carries its own candles.)
+    for (const [x, z, y] of [[-5.5, ARENA.z + 17.6, ARENA.y], [5.5, ARENA.z + 17.6, ARENA.y]]) {
       if (this.prop('candelabra', 1.9, x, z, r() * 6.28, { y, r: 0.35 })) this.glow(x, y + 1.85, z, 0.6, 0xffb060);
     }
     // The Hound's lair: skull piles around the arena edge.
@@ -458,6 +563,7 @@ export class World {
 
   lamp(x, z, withLight = true) {
     const y = heightAt(x, z);
+    (this.lampSpots ??= []).push([x, z]);
     const m = makeEnv('lamp', 4.0);
     if (m) { m.position.set(x, y, z); m.rotation.y = x < 0 ? Math.PI / 2 : -Math.PI / 2; this.add(m); }
     else {
@@ -492,8 +598,10 @@ export class World {
       const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.15, 0.9, 6), this.mat.iron);
       leg.position.set(x, y + 0.45, z); this.add(leg);
     }
-    const fire = new THREE.Mesh(new THREE.ConeGeometry(0.3, 0.7, 7), new THREE.MeshBasicMaterial({ color: 0xff7a20, transparent: true, opacity: 0.85 }));
-    fire.position.set(x, y + top + 0.3, z); this.add(fire); this.flames.push(fire);
+    // Shader flame (animates itself), a warm halo over the coals, and embers (built in one batch).
+    const fire = flameMesh(); fire.position.set(x, y + top - 0.12, z); fire.scale.set(1.25, 1.45, 1); this.add(fire);
+    this.glow(x, y + top + 0.15, z, 1.1, 0xff7a30);
+    (this.emberSrc ??= []).push({ x, y: y + top, z });
     if (light) { const l = new THREE.PointLight(0xff7a30, 12, 16, 1.5); l.position.set(x, y + top + 0.7, z); this.add(l); this.flames.push(l); }
     this.colliders.push({ x, z, r: 0.5 });
   }
@@ -628,16 +736,44 @@ export class World {
     return true;
   }
 
+  // Ward banner: painted cloth (public/textures/banner.webp, 501×1536) with a ragged cut-out hem.
+  // Geometry and material are shared by every banner. Until the texture arrives (or if it is
+  // missing) the banner shows as plain dark red cloth.
   banner(x, y, z, ry) {
-    const b = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 3.4, 1, 6), this.mat.banner);
+    if (!this.bannerGeo) {
+      this.bannerGeo = new THREE.PlaneGeometry(1.12, 3.4, 2, 10);
+      const mat = swayBanner(this.mat.banner, 3.4);
+      new THREE.TextureLoader().load('textures/banner.webp', (tex) => {
+        tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 4;
+        mat.map = tex; mat.color.set(0xffffff); mat.alphaTest = 0.5; mat.needsUpdate = true;
+      });
+    }
+    const b = new THREE.Mesh(this.bannerGeo, this.mat.banner);
     b.position.set(x, y, z); b.rotation.y = ry; this.add(b);
-    // pale sigil
-    const sig = new THREE.Mesh(new THREE.RingGeometry(0.22, 0.3, 8), new THREE.MeshBasicMaterial({ color: 0xd8c8a8, side: THREE.DoubleSide }));
-    sig.position.set(0, 0.6, 0.01); b.add(sig);
   }
 
+  // Checkpoint lantern shrine. Tripo model (twisted post, hanging cage, candles and bones at
+  // the base); its amber panes glow once lit. Falls back to the primitive version.
   lantern(x, z, name) {
     const y = heightAt(x, z);
+    const H = 1.6, m = makeEnv('lantern', H);
+    if (m) {
+      // The panes' glow is a per-lantern uniform, so each lantern gets its own material copy
+      // (two lanterns: two extra materials, no extra draw calls).
+      const glow = { value: 0.35 };   // unlit: a faint ember in the panes, so the lantern can be found
+      m.traverse((o) => { if (o.isMesh) { o.material = amberGlowMaterial(o.material, glow); } });
+      // The arm points along model +x; turn it so the cage hangs out over the street.
+      const out = x > 0 ? -1 : 1;
+      m.position.set(x, y, z); m.rotation.y = out > 0 ? 0 : Math.PI; this.add(m);
+      // Cage centre in model space (measured from the GLB): 0.18 H out on the arm, 0.58 H up.
+      const cx = x + out * 0.18 * H, cy = y + 0.58 * H;
+      const light = new THREE.PointLight(0xff6a2a, 0, 10, 1.4); light.position.set(cx, cy, z); this.add(light);
+      const halo = this.glow(cx, cy, z, 0, 0xffa050);
+      const L = { x, z, y, name, lit: false, light, glow, halo };
+      this.lanterns.push(L);
+      this.colliders.push({ x, z, r: 0.35 });
+      return L;
+    }
     const g = new THREE.Group();
     const post = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 1.6, 6), this.mat.iron); post.position.y = 0.8; g.add(post);
     const hook = new THREE.Mesh(new THREE.TorusGeometry(0.15, 0.025, 4, 10, Math.PI), this.mat.iron); hook.position.set(0.15, 1.6, 0); g.add(hook);
@@ -659,7 +795,8 @@ export class World {
 
   lightLantern(L) {
     L.lit = true;
-    L.glass.material.emissiveIntensity = 3;
+    if (L.glass) L.glass.material.emissiveIntensity = 3;
+    if (L.glow) { L.glow.value = 2.4; L.halo.userData.base = 0.7; }
     L.light.intensity = 10;
   }
 
@@ -693,11 +830,12 @@ export class World {
     this.cart(-3.5, 15, 0.3);
     this.cart(3.2, 44, -2.6);
     this.statue(4.6, 28, -Math.PI / 2, 0.9);
-    for (const [x, z] of [[-4.8, 9], [4.9, 19], [-5, 25], [-4.6, 33], [4.7, 36], [-4.9, 49], [5.1, 55], [-5.1, 56]]) this.clutter(x, z);
+    // Clutter sits in the gaps between street lamps (lamps every 11 m: west z 4+11k, east z 9.5+11k), clear of the shrines.
+    for (const [x, z] of [[-4.8, 9], [4.9, 15], [-5, 21], [4.7, 36], [-4.6, 42.5], [-4.9, 53.5]]) this.clutter(x, z);
     for (let z = 10; z < 58; z += 14) { this.banner(-6.3, 6.5, z, Math.PI / 2); this.banner(6.3, 6.5, z + 7, -Math.PI / 2); }
     for (const [z, side] of [[12, -1], [26, 1], [38, -1], [51, 1]]) this.cage(side * 7.3, z, 6.2, side);
     this.lantern(2.5, 3, 'Ward Gate');
-    this.shrine(4.6, 2.2, -Math.PI / 2); this.shrine(-5.2, 30, Math.PI / 2); this.shrine(5.3, 47.5, -Math.PI / 2);
+    this.shrine(-5.2, 30, Math.PI / 2); this.shrine(5.3, 47.5, -Math.PI / 2);
     this.note(-3.6, 21, 'A ledger page, the ink still tacky.<br><br>"Saint Orlan\'s Ward — sealed at the ninth bell. Names counted: four hundred and twelve. Names spared: none.<br><br>Sentence carried out by the hand that signs below."<br><br>The signature is yours.');
   }
 
@@ -719,13 +857,12 @@ export class World {
       this.statue(0, 74, Math.PI, 1.3);
     }
     this.colliders.push({ x: 0, z: 74, r: 4.4 });
-    this.brazier(-12, 64); this.brazier(12, 64); this.brazier(-12.5, 86, false); this.brazier(12.5, 86);
-    for (const [x, z] of [[-13, 70], [13.5, 77], [-8, 88], [9, 60.5], [-14, 81]]) this.clutter(x, z);
+    this.brazier(-12, 64); this.brazier(12, 64); this.brazier(-12.5, 86); this.brazier(12.5, 86);
+    for (const [x, z] of [[-13, 70], [13.5, 77], [9, 60.5], [-14, 81]]) this.clutter(x, z);
     this.cart(10, 82, 1.2);
     this.tree(-13.2, 61, 10); this.tree(13, 89.5, 8.5);
     this.statue(-14.5, 75, Math.PI / 2, 0.9); this.statue(14.5, 70, -Math.PI / 2, 0.9);
     this.lantern(-10, 89, 'Cathedral Steps');
-    this.shrine(-12.4, 89.4, Math.PI / 2);
     this.note(11.5, 71, 'A Seer\'s prayer, scratched into a vial:<br><br>"Grace was given to close the wound. We drank, and the wound opened inward. The blood remembers who spilled it — and so it follows him."');
   }
 
@@ -914,6 +1051,8 @@ export class World {
 
   update(dt, center) {
     this.time += dt;
+    worldTime.value = this.time;
+    for (const L of this.lanterns) if (L.lit && L.glow) L.glow.value = 2.4 * (0.9 + Math.random() * 0.15);
     for (const f of this.flames) {
       if (f.isLight) {
         f.userData.base ??= f.intensity;
