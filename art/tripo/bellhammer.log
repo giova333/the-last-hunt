@@ -1,0 +1,13 @@
+task created 272178af-d1ca-4189-9996-4b0193301abf (@bellhammer)
+image_to_model · queued
+image_to_model · running 6% · 272178af
+image_to_model · running 10% · 272178af
+image_to_model · running 17% · 272178af
+image_to_model · running 25% · 272178af
+image_to_model · running 39% · 272178af
+image_to_model · running 59% · 272178af
+image_to_model · running 85% · 272178af
+image_to_model · success 100% · 272178af
+✓ image_to_model · 272178af-d1ca-4189-9996-4b0193301abf · 40 credits
+downloading artifacts…
+✓ artifacts saved to art/tripo/bellhammer/tripo-out/bellhammer-272178af

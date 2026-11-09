@@ -7,7 +7,7 @@ import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { Input } from './input.js';
 import { Audio } from './audio.js';
 import { loadAssets } from './assets.js';
-import { World, heightAt, ARENA, GATE_Z } from './world.js';
+import { World, heightAt, ARENA, GATE_Z, SHORTCUT } from './world.js';
 import { FX } from './fx.js';
 import { Player } from './player.js';
 import { Seer } from './seer.js';
@@ -15,6 +15,7 @@ import { Boss } from './boss.js';
 import { ThirdPersonCamera } from './camera.js';
 import { UI } from './ui.js';
 import { TouchControls, isTouchDevice } from './touch.js';
+import { upgradeRows, upgradeCost, buyUpgrade, dropEchoes } from './progress.js';
 
 // Film grain + vignette + slight desaturation for the gothic look.
 const GradeShader = {
@@ -113,14 +114,19 @@ class Game {
     this.seers = [
       // Street
       new Seer(this, { x: 2.5, z: 19, yaw: Math.PI }),
-      new Seer(this, { x: -3, z: 31, yaw: Math.PI }),
-      new Seer(this, { x: 3.8, z: 40, yaw: -Math.PI / 2 }, { dormant: true }),
+      new Seer(this, { x: -4.0, z: 30, yaw: -Math.PI / 2 }, { dormant: true }),   // kneeling at the shrine, back to the street
+      new Seer(this, { x: 4.6, z: 45.8, yaw: -Math.PI / 2 }, { dormant: true }),  // crouched behind the cart
+      new Seer(this, { x: -4.6, z: 46, yaw: Math.PI }, { kind: 'thrower' }),      // under the cage: flasks down the street
       new Seer(this, { x: -1, z: 52, yaw: Math.PI }),
+      // Back alley (shortcut): waits in the dark for whoever comes down from the plaza.
+      new Seer(this, { x: 15.1, z: 33, yaw: 0 }, { dormant: true }),
       // Plaza
       new Seer(this, { x: 9, z: 68, yaw: -Math.PI / 2 }),
       new Seer(this, { x: -8, z: 70, yaw: Math.PI / 2 }),
       new Seer(this, { x: -12, z: 79, yaw: Math.PI / 2 }, { dormant: true }),
       new Seer(this, { x: 6, z: 84, yaw: Math.PI }),
+      new Seer(this, { x: 2.5, z: 80.5, yaw: Math.PI }, { kind: 'thrower' }),     // behind the fountain
+      new Seer(this, { x: 0, z: 88, yaw: Math.PI }, { kind: 'warden' }),          // the Ward Warden: guards the steps
     ];
     this.boss = new Boss(this);
     this.bossActive = false;
@@ -156,6 +162,8 @@ class Game {
     document.querySelector('#title').classList.add('hidden');
     document.querySelector('#hud').classList.remove('hidden');
     this.started = true;
+    this.stats = { t0: performance.now(), deaths: 0, earned: 0 };
+    this.hinted = {};
     this.resume();
   }
   pause() { this.paused = true; document.querySelector('#pause').classList.remove('hidden'); this.touch?.show(false); }
@@ -195,12 +203,49 @@ class Game {
     this.waves.push({ m, t: 0, r });
   }
 
+  // A Seer's lobbed bubble of boiling blood: a quivering translucent sphere with a bright rim
+  // that stretches along its flight and drips as it goes; bursts into a blood pool where it lands.
+  throwFlask(from, to) {
+    this.bubbleMat ??= new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false, fog: false,
+      uniforms: { t: { value: 0 } },
+      vertexShader: `uniform float t; varying vec3 vN; varying vec3 vV; varying vec3 vP;
+        void main(){
+          vec3 p = position * (1.0 + 0.07 * sin(t * 13.0 + position.y * 9.0 + position.x * 7.0));
+          vec4 mv = modelViewMatrix * vec4(p, 1.0);
+          vN = normalize(normalMatrix * normal); vV = normalize(-mv.xyz); vP = p;
+          gl_Position = projectionMatrix * mv;
+        }`,
+      fragmentShader: `uniform float t; varying vec3 vN; varying vec3 vV; varying vec3 vP;
+        void main(){
+          vec3 n = normalize(vN), v = normalize(vV);
+          float fres = pow(1.0 - abs(dot(n, v)), 2.2);
+          float swirl = 0.5 + 0.5 * sin(vP.y * 30.0 + t * 6.0 + sin(vP.x * 25.0 + t * 4.0) * 2.0);
+          vec3 inner = mix(vec3(0.16, 0.004, 0.004), vec3(0.34, 0.02, 0.01), swirl);
+          vec3 col = mix(inner, vec3(1.0, 0.16, 0.08), fres);
+          col += vec3(1.0, 0.8, 0.75) * pow(max(dot(reflect(-v, n), normalize(vec3(0.4, 0.8, 0.3))), 0.0), 36.0);   // wet highlight
+          gl_FragColor = vec4(pow(col, vec3(2.2)), 0.6 + 0.4 * fres);
+        }`,
+    });
+    const m = new THREE.Mesh(this.bubbleGeo ??= new THREE.SphereGeometry(0.17, 18, 14), this.bubbleMat);
+    m.position.copy(from); this.scene.add(m);
+    const dx = to.x - from.x, dz = to.z - from.z, T = Math.min(1.3, Math.max(0.6, Math.hypot(dx, dz) / 9));
+    const dy = heightAt(to.x, to.z) + 1 - from.y;
+    const v = new THREE.Vector3(dx / T, (dy + 0.5 * 14 * T * T) / T, dz / T);
+    this.projectiles.push({ m, v, life: 3 });
+  }
+
   updateProjectiles(dt) {
     for (const p of this.projectiles) {
       p.v.y -= 14 * dt;
       p.m.position.addScaledVector(p.v, dt);
       p.life -= dt;
-      this.fx.poison(p.m.position, 1);
+      // Stretch along the flight, quivering; drip blood as it goes.
+      const sp = p.v.length(), k = Math.min(0.35, sp / 40);
+      p.m.quaternion.setFromUnitVectors(this._up ??= new THREE.Vector3(0, 1, 0), this._dir = (this._dir ?? new THREE.Vector3()).copy(p.v).divideScalar(sp || 1));
+      p.m.scale.set(1 - k * 0.5, 1 + k, 1 - k * 0.5);
+      this.bubbleMat.uniforms.t.value += dt / Math.max(1, this.projectiles.length);
+      if (Math.random() < dt * 30) this.fx.emit(1, p.m.position, { color: [0.45, 0.02, 0.02], speed: 0.5, up: 0.2, life: 0.7, size: 0.07, gravity: 9 });
       const floor = heightAt(p.m.position.x, p.m.position.z);
       const hitPlayer = p.m.position.distanceTo(this.player.chest(1)) < 0.7;
       if (p.m.position.y <= floor || hitPlayer || p.life <= 0) {
@@ -208,6 +253,7 @@ class Game {
         this.scene.remove(p.m);
         this.audio.shatter();
         const at = p.m.position.clone().setY(floor);
+        this.fx.emit(26, at.clone().setY(floor + 0.15), { color: [0.5, 0.02, 0.02], speed: 3.2, up: 3, life: 0.9, size: 0.09, gravity: 12 });   // the bubble bursts
         if (hitPlayer) this.player.takeHit(12, { pos: at }, { knock: 1 }) && (this.player.poison = 4);
         this.spawnPool(at);
       }
@@ -215,8 +261,9 @@ class Game {
     this.projectiles = this.projectiles.filter((p) => !p.dead);
     for (const pool of this.pools) {
       pool.t -= dt;
-      pool.m.material.opacity = Math.min(0.55, pool.t * 0.3);
-      if (Math.random() < dt * 10) this.fx.poison(pool.m.position.clone().add(new THREE.Vector3((Math.random() - 0.5) * 2.4, 0, (Math.random() - 0.5) * 2.4)), 1);
+      const U = pool.m.material.uniforms, age = 4.5 - pool.t;
+      U.t.value += dt; U.fade.value = Math.min(1, pool.t * 0.7); U.grow.value = Math.min(1, 0.3 + age * 3.5);
+      if (Math.random() < dt * 10) this.fx.bloodSteam(pool.m.position.clone().add(new THREE.Vector3((Math.random() - 0.5) * 2.4, 0, (Math.random() - 0.5) * 2.4)), 1);
       if (this.player.pos.distanceTo(pool.m.position) < 1.7 && !this.player.dead) this.player.poison = Math.max(this.player.poison, 2.5);
       if (pool.t <= 0) { this.scene.remove(pool.m); pool.m.material.dispose(); pool.dead = true; }
     }
@@ -231,15 +278,45 @@ class Game {
     this.waves = this.waves.filter((w) => !w.dead);
   }
 
+  // Boiling blood: a ragged pool of near-black crimson with a deep-red rim (the 1.7 m danger edge
+  // stays readable), churning and popping bubbles; splashes out on impact, then dries away.
   spawnPool(at) {
-    const m = new THREE.Mesh(this.poolGeo ??= new THREE.CircleGeometry(1.7, 20), new THREE.MeshBasicMaterial({ color: 0x5a8a1a, transparent: true, opacity: 0.55, depthWrite: false }));
-    m.rotation.x = -Math.PI / 2; m.position.copy(at).setY(at.y + 0.03);
+    const mat = new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false, fog: false,
+      uniforms: { t: { value: 0 }, fade: { value: 1 }, grow: { value: 0.3 }, seed: { value: Math.random() * 50 } },
+      vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: `varying vec2 vUv; uniform float t, fade, grow, seed;
+        float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+        float noise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+          return mix(mix(hash(i), hash(i + vec2(1, 0)), f.x), mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), f.x), f.y); }
+        float fbm(vec2 p){ return noise(p) * 0.5 + noise(p * 2.03 + 1.7) * 0.3 + noise(p * 4.1 + 3.1) * 0.2; }
+        void main(){
+          vec2 p = (vUv - 0.5) * 2.0 / grow;                   // 1.0 = the 1.7 m danger radius
+          float r = length(p), a = atan(p.y, p.x);
+          float R = 0.84 + 0.26 * (fbm(vec2(a * 1.3 + seed, seed)) - 0.5) + 0.08 * (noise(vec2(a * 7.0, seed)) - 0.5);
+          float inside = 1.0 - smoothstep(R - 0.03, R, r);
+          if (inside <= 0.0) discard;
+          float churn = fbm(p * 2.2 + vec2(seed, t * 0.25));
+          vec3 col = mix(vec3(0.06, 0.004, 0.004), vec3(0.2, 0.012, 0.01), churn);   // dark blood
+          col = mix(col, vec3(0.42, 0.03, 0.02), smoothstep(R - 0.22, R - 0.03, r) * 0.7);   // deep-red rim
+          col += vec3(0.3, 0.04, 0.02) * smoothstep(R - 0.06, R - 0.02, r) * (1.0 - smoothstep(R - 0.02, R, r));   // wet meniscus
+          vec2 cell = floor(p * 6.0); vec2 f = fract(p * 6.0) - 0.5;                     // bubbles
+          float h = hash(cell + seed), life = fract(t * (0.9 + h * 0.9) + h * 7.0);   // boiling: quick pops
+          float bub = (1.0 - smoothstep(0.08, 0.16, length(f - (vec2(hash(cell + 3.1), hash(cell + 5.7)) - 0.5) * 0.5))) * step(0.55, h) * sin(life * 3.14159);
+          col += vec3(0.7, 0.1, 0.04) * bub * 0.8;
+          col = pow(col, vec3(2.2));   // authored as display colours; the scene renders in linear light
+          gl_FragColor = vec4(col, inside * fade * 0.9);
+        }`,
+    });
+    const m = new THREE.Mesh(this.poolGeo ??= new THREE.PlaneGeometry(3.4, 3.4), mat);
+    m.rotation.x = -Math.PI / 2; m.position.copy(at).setY(at.y + 0.03); m.renderOrder = 1;
     this.scene.add(m);
     this.pools.push({ m, t: 4.5 });
   }
 
   onEnemyKilled(e, echoes) {
     this.player.echoes += echoes;
+    if (this.stats) this.stats.earned += echoes;
     this.fx.echoes(e.chest(1));
     if (this.player.lock === e) this.player.lock = this.findLockTarget();
   }
@@ -247,6 +324,7 @@ class Game {
   onBossKilled() {
     this.bossDefeated = true;
     this.player.echoes += 5000;
+    if (this.stats) this.stats.earned += 5000;
     this.player.lock = null;
     this.audio.setMusic(false);
     this.audio.victory();
@@ -257,11 +335,16 @@ class Game {
       this.ui.showBanner('The Hound Is Put to Rest', 'Saint Orlan\'s Ward falls silent. Somewhere in Veyr, a bell answers.', true, 0);
       this.audio.lantern();
     }, 2200);
+    setTimeout(() => this.showResults(), 8500);
   }
 
   onPlayerDeath() {
+    // Every echo stays where he fell; an older stain he never reclaimed is gone for good.
+    const stain = dropEchoes(this.player, this.player.pos);
+    this.world.setStain(stain);
+    if (this.stats) this.stats.deaths++;
     this.audio.death();
-    this.ui.showBanner('The Blood Runs Cold', '', false, 0);
+    this.ui.showBanner('The Blood Runs Cold', stain ? `${stain.echoes} blood echoes lie where you fell.` : '', false, 0);
     setTimeout(() => this.restartFromCheckpoint(), 4200);
   }
 
@@ -270,7 +353,6 @@ class Game {
     const L = this.checkpoint;
     this.player.respawn({ x: L.x - 1.2, y: L.y, z: L.z, yaw: 0 });
     this.cam.yaw = 0;
-    this.player.echoes = Math.floor(this.player.echoes / 2);
     this.resetEnemies();
   }
 
@@ -303,6 +385,12 @@ class Game {
       if (inp.hit('KeyE', 'Escape')) this.ui.hideNote();
       return;
     }
+    if (this.ui.lanternOpen) {
+      this.ui.setPrompt(null);
+      ['vit', 'end', 'str', 'vial'].forEach((k, i) => { if (inp.hit(`Digit${i + 1}`)) this.buyAtLantern(k); });
+      if (inp.hit('KeyE')) this.ui.hideLantern();
+      return;
+    }
     if (p.dead || !['idle', 'move'].includes(p.state)) { this.ui.setPrompt(null); return; }
     let prompt = null, action = null;
     for (const L of this.world.lanterns) {
@@ -311,12 +399,40 @@ class Game {
         action = () => {
           if (!L.lit) { this.world.lightLantern(L); this.ui.showBanner('Lantern Lit', L.name, true, 2500); }
           this.checkpoint = L;
-          p.hp = p.maxHp; p.vials = 4; p.poison = 0; p.rally = 0;
+          p.hp = p.maxHp; p.stamina = p.maxStamina; p.vials = p.maxVials; p.poison = 0; p.rally = 0;
           this.resetEnemies();
           this.audio.lantern();
           this.fx.heal(p.chest(1));
+          this.openLantern();
         };
       }
+    }
+    const st = this.world.stain;
+    if (st && Math.hypot(p.pos.x - st.x, p.pos.z - st.z) < 1.8 && Math.abs(p.pos.y - st.y) < 2) {
+      prompt = `<b>E</b> — Reclaim ${st.echoes} blood echoes`;
+      action = () => { p.echoes += st.echoes; this.fx.echoes(p.chest(1)); this.audio.lantern(); this.world.setStain(null); };
+    }
+    for (const k of this.world.pickups ?? []) {
+      if (!k.taken && Math.hypot(p.pos.x - k.x, p.pos.z - k.z) < 1.6) {
+        prompt = '<b>E</b> — Pick up';
+        action = () => {
+          k.taken = true;
+          this.fx.echoes(p.chest(1));
+          if (k.kind === 'shard') {
+            p.maxVials += 1; p.vials += 1;
+            this.ui.showBanner('Blood Vial Shard', 'The lanterns will fill one more vial.', true, 3000);
+          } else {
+            p.echoes += k.amount;
+            this.ui.showBanner("A Hunter's Purse", `${k.amount} blood echoes, still warm.`, true, 3000);
+          }
+        };
+      }
+    }
+    if (!this.world.shortcutOpen && Math.abs(p.pos.z - (SHORTCUT.z0 + SHORTCUT.z1) / 2) < 2.4 && Math.abs(p.pos.x - SHORTCUT.x) < 2) {
+      if (p.pos.x > SHORTCUT.x) {
+        prompt = '<b>E</b> — Lift the bar';
+        action = () => { this.world.openShortcut(); this.audio.gate(); this.ui.showBanner('Shortcut Opened', 'The Ward Gate lantern lies just beyond.', true, 2600); };
+      } else prompt = 'Barred from the other side';
     }
     for (const n of this.world.notes) {
       if (Math.hypot(p.pos.x - n.x, p.pos.z - n.z) < 1.8) {
@@ -330,6 +446,55 @@ class Game {
     }
     this.ui.setPrompt(prompt);
     if (action && inp.hit('KeyE')) action();
+  }
+
+  // The run's end: what it took, and what was found. Frees the cursor (no pause on unlock).
+  showResults() {
+    this.ended = true;
+    document.exitPointerLock?.();
+    this.touch?.show(false);
+    this.ui.banner.classList.add('hidden');
+    const S = this.stats ?? { t0: performance.now(), deaths: 0, earned: 0 }, secs = Math.round((performance.now() - S.t0) / 1000);
+    const picks = this.world.pickups ?? [], notes = this.world.notes;
+    this.ui.showResults([
+      ['Time', `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`],
+      ['Deaths', S.deaths],
+      ['Blood echoes earned', S.earned],
+      ['Rites at the lantern', this.player.level - 1],
+      ['Secrets found', `${picks.filter((k) => k.taken).length} / ${picks.length}`],
+      ['Letters read', `${notes.filter((n) => n.read).length} / ${notes.length}`],
+    ], () => location.reload());
+  }
+
+  // First-time hints, each shown once, worded for the device in hand.
+  teach() {
+    const p = this.player, H = this.hinted, t = this.isTouch;
+    if (!H || p.dead) return;
+    if (!H.fight && this.seers.some((s) => s.aggro && !s.dead && s.dist(p) < 12)) {
+      H.fight = true;
+      this.ui.hint(t ? '<b>Lock</b> to focus a foe · <b>Roll</b> through its attacks' : '<b>Q</b> lock on · <b>Space</b> roll through attacks', 6000);
+    } else if (!H.heal && p.hp < p.maxHp * 0.5 && p.vials > 0) {
+      H.heal = true;
+      this.ui.hint(t ? '<b>Vial</b> — drink blood to heal' : '<b>R</b> — drink a blood vial', 5000);
+    } else if (!H.spend && p.echoes >= upgradeCost(p.level)) {
+      H.spend = true;
+      this.ui.hint('Rest at a lantern to spend your blood echoes', 5000);
+    }
+  }
+
+  // Rest menu: spend blood echoes on the hunter.
+  openLantern(bought = null) {
+    const p = this.player;
+    this.ui.showLantern({ echoes: p.echoes, cost: upgradeCost(p.level), rows: upgradeRows(p) }, (k) => this.buyAtLantern(k), bought);
+  }
+
+  buyAtLantern(key) {
+    const p = this.player;
+    if (!buyUpgrade(p, key)) return;
+    p.hp = p.maxHp; p.stamina = p.maxStamina; p.vials = p.maxVials;   // a rite at the lantern restores in full
+    this.audio.lantern();
+    this.fx.heal(p.chest(1));
+    this.openLantern(key);
   }
 
   enterArena() {
@@ -425,14 +590,14 @@ class Game {
   step(dt) {
     const p = this.player;
     this.interact();
-    const frozen = this.ui.noteOpen;
+    const frozen = this.ui.noteOpen || this.ui.lanternOpen;
     if (this.passing) this.updatePassing(dt);
     else if (!frozen) p.update(dt);
     else p.sync(dt);
     for (const s of this.seers) {
       const near = s.dist(p) < 40 || s.aggro;
       // Far, idle Seers aren't drawn at all (deep in the fog; saves skinning + draw calls).
-      if (near) s.update(dt, p); else s.root.visible = !s.dead && s.dist(p) < 70;
+      if (near) { if (!s.dead) s.root.visible = true; s.update(dt, p); } else s.root.visible = !s.dead && s.dist(p) < 70;
     }
     if (this.bossActive || this.bossDefeated) this.boss.update(dt, p);
     else this.boss.sync(dt);
@@ -445,7 +610,10 @@ class Game {
     this.audio.setListener(this.camera);
     this.ui.update(p, this.bossActive ? this.boss : null, this.camera);
     this.ui.enemyBars(this.seers, this.camera, p);
+    const st = this.world.stain;
+    if (st && Math.random() < dt * 16) this.fx.emit(1, new THREE.Vector3(st.x + (Math.random() - 0.5) * 0.9, st.y + 0.05, st.z + (Math.random() - 0.5) * 0.9), { color: [0.9, 0.06, 0.03], speed: 0.15, up: 1.4, life: 1.8, size: 0.07, gravity: -0.5, drag: 0.6 });   // blood motes rising from the stain
     this.checkAreas();
+    this.teach();
   }
 }
 

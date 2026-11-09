@@ -52,6 +52,7 @@ export class FX {
   }
 
   sparks(at) { this.emit(18, at, { color: [1.6, 1.0, 0.4], speed: 6, up: 2, life: 0.35, size: 0.05, gravity: 14 }); }
+  bloodSteam(at, n = 2) { this.emit(n, at, { color: [0.55, 0.04, 0.02], speed: 0.3, up: 1.6, life: 1.2, size: 0.35, gravity: -0.7, drag: 1 }); }
   poison(at, n = 4) { this.emit(n, at, { color: [0.35, 0.55, 0.1], speed: 0.4, up: 1.4, life: 1.4, size: 0.4, gravity: -0.6, drag: 1 }); }
   dust(at, n = 30, r = 1) { this.emit(n, at, { color: [0.25, 0.22, 0.2], speed: 3 * r, up: 1, life: 1.2, size: 0.5, gravity: 0.3, drag: 2 }); }
   mist(at) { this.emit(60, at, { color: [0.6, 0.0, 0.02], speed: 6, up: 1.5, life: 1.6, size: 0.6, gravity: -0.3, drag: 1.5 }); }

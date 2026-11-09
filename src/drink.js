@@ -16,7 +16,7 @@ const RAISE = 0.28, TO_MOUTH = 0.42, DRINK_END = 0.7, LOWER = 0.95;
 // spiralled up the neck, a cork capped with red sealing wax. Procedural (not a Tripo model)
 // because the glass must be see-through and the blood a separate mesh that drains.
 const V2 = (pts) => pts.map(([x, y]) => new THREE.Vector2(x, y));
-function makeVial() {
+export function makeVial({ light = true } = {}) {
   const g = new THREE.Group();
   // Glass (lathe profile, metres).
   const prof = V2([[0, 0], [0.018, 0.002], [0.03, 0.012], [0.036, 0.03], [0.035, 0.048], [0.028, 0.064], [0.016, 0.075], [0.011, 0.085], [0.0105, 0.135], [0.0145, 0.139], [0.0145, 0.144], [0.0105, 0.146], [0, 0.146]]);
@@ -36,6 +36,7 @@ function makeVial() {
   const wire = new THREE.Mesh(new THREE.TubeGeometry(helix, 48, 0.0012, 4), new THREE.MeshStandardMaterial({ color: 0xb08a3a, metalness: 1, roughness: 0.35 }));
   g.add(liquid, glass, cork, wax, wire);
   g.liquid = liquid;
+  if (!light) return g;   // a vial lying in the world: no light of its own
   g.light = new THREE.PointLight(0xff2a14, 0, 2.2, 1.6);
   g.light.position.y = 0.05;
   g.add(g.light);

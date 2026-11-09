@@ -10,6 +10,7 @@ export const CHARACTERS = {
   hunter: { url: 'models/hunter.glb', height: 1.85, color: 0x3a2a20, accent: 0x7a1414 },
   seer: { url: 'models/seer.glb', height: 2.1, color: 0x4a3426, accent: 0x6a1c1c },
   wolf: { url: 'models/wolf.glb', height: 5.8, color: 0x5a4c48, accent: 0x9a8a80 },
+  warden: { url: 'models/warden.glb', height: 3.1, color: 0x2a2224, accent: 0x6a1c1c },   // mini-boss at the steps
 };
 
 // Keywords used to map whatever clip names a GLB carries onto game states.
@@ -83,6 +84,7 @@ export async function loadAssets(onProgress) {
 export const PROPS = {
   cleaver: { url: 'models/cleaver.glb', length: 1.15 },
   censer: { url: 'models/censer.glb', length: 1.5 },
+  bellhammer: { url: 'models/bellhammer.glb', length: 2.3 },
 };
 
 export function makeProp(name) {

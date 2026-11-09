@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { makeEnv } from './assets.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { makeVial } from './drink.js';
 
 // Saint Orlan's Ward — one linear level:
 //   gate courtyard (lantern) → plague street → cistern plaza (lantern) →
@@ -15,7 +16,11 @@ const RECTS = [
   { x0: -6.2, x1: 6.2, z0: -9, z1: 62 },     // street
   { x0: -15.5, x1: 15.5, z0: 58, z1: 92 },   // plaza
   { x0: -5.2, x1: 5.2, z0: 90, z1: 112 },    // steps + gate passage
+  { x0: 5, x1: 16, z0: -7, z1: -2.5 },       // shortcut passage off the start street (overlaps it by > 2 radii, or bodies stick at the seam)
+  { x0: 14.2, x1: 16, z0: -7, z1: 60 },      // back alley behind the east houses, into the plaza
 ];
+// Iron gate across the shortcut passage: barred until unbarred from the alley side.
+export const SHORTCUT = { x: 7.2, z0: -7, z1: -2.5 };
 
 export function heightAt(x, z) {
   if (z < 93) return 0;
@@ -23,8 +28,9 @@ export function heightAt(x, z) {
   return ARENA.y;
 }
 
-function inside(x, z, r, gateOpen, gateSealed) {
+function inside(x, z, r, gateOpen, gateSealed, barred = false) {
   if (!gateOpen && z > GATE_Z - 0.6 - r) return false;       // fog gate not yet crossed
+  if (barred && z > SHORTCUT.z0 && z < SHORTCUT.z1 && Math.abs(x - SHORTCUT.x) < r + 0.15) return false;   // shortcut gate
   if (gateSealed && z < GATE_Z + 3 + r) return false;          // sealed in with the boss
   for (const R of RECTS) if (x > R.x0 + r && x < R.x1 - r && z > R.z0 + r && z < R.z1 - r) return true;
   const dx = x - ARENA.x, dz = z - ARENA.z;
@@ -846,6 +852,89 @@ export class World {
     L.light.intensity = 10;
   }
 
+  // A secret worth finding: the object itself on the ground under a pale gold wisp (the
+  // item light souls-likes teach players to look for). Red is kept for the bloodstain.
+  // kind: 'shard' (+1 blood vial: a small vial on its side) or 'echoes' (a leather purse).
+  pickup(x, z, kind, amount = 0) {
+    const y = heightAt(x, z);
+    const obj = kind === 'shard' ? this.vialProp() : this.purseProp();
+    obj.position.set(x, y, z); obj.rotation.y = this.rand() * 6.28; this.add(obj);
+    const wisp = this.glow(x, y + 0.45, z, 0.55, 0xffe2b0), core = this.glow(x, y + 0.45, z, 0.16, 0xffffff);
+    (this.pickups ??= []).push({ x, z, kind, amount, taken: false, obj, wisp, core });
+  }
+
+  vialProp() {
+    const v = makeVial({ light: false });
+    v.visible = true; v.scale.setScalar(1.6);
+    v.rotation.set(0, 0, Math.PI / 2 - 0.15); v.position.y = 0.06;   // lying on its side, neck slightly up
+    const g = new THREE.Group(); g.add(v); return g;
+  }
+
+  // A small leather coin purse, cinched with cord, a few coins spilled beside it.
+  purseProp() {
+    const g = new THREE.Group();
+    const leather = (this.leatherMat ??= new THREE.MeshStandardMaterial({ color: 0x4a2c1c, roughness: 0.85 }));
+    const prof = [[0, 0], [0.07, 0.01], [0.1, 0.05], [0.095, 0.1], [0.05, 0.14], [0.03, 0.16], [0.05, 0.19], [0.02, 0.2], [0, 0.2]].map(([a, b]) => new THREE.Vector2(a, b));
+    const bag = new THREE.Mesh(new THREE.LatheGeometry(prof, 12), leather); bag.scale.set(1, 0.85, 1.1); bag.castShadow = true; g.add(bag);
+    const cord = new THREE.Mesh(new THREE.TorusGeometry(0.034, 0.007, 4, 12), new THREE.MeshStandardMaterial({ color: 0x6a1010, roughness: 0.7 }));
+    cord.rotation.x = Math.PI / 2; cord.position.y = 0.135; g.add(cord);
+    const gold = (this.coinMat ??= new THREE.MeshStandardMaterial({ color: 0xc9a050, metalness: 1, roughness: 0.35 }));
+    for (const [cx, cz, t] of [[0.14, 0.04, 0.2], [0.18, -0.03, 0.6], [0.12, -0.08, 1.4]]) {
+      const c = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, 0.005, 10), gold); c.position.set(cx, 0.004, cz); c.rotation.set(0.1, t, 0.05); g.add(c);
+    }
+    return g;
+  }
+
+  // One quad of the decal atlas (0 blood pool, 1 smear, 2 leaves, 3 ash) lying on the ground.
+  decal(k, x, z, size) {
+    const g = new THREE.PlaneGeometry(size, size).rotateX(-Math.PI / 2);
+    const uv = g.attributes.uv, u0 = (k % 2) * 0.5, v0 = k < 2 ? 0.5 : 0;
+    for (let i = 0; i < uv.count; i++) uv.setXY(i, u0 + uv.getX(i) * 0.5, v0 + uv.getY(i) * 0.5);
+    const m = new THREE.Mesh(g, this.decalMat); m.position.set(x, heightAt(x, z) + 0.025, z); m.rotation.y = this.rand() * 6.28; m.receiveShadow = true;
+    return this.add(m);
+  }
+
+  // Where the hunter last fell, holding the echoes he dropped: a pool of his blood with ripples
+  // running across it, a faint column of red light rising from it, and a heartbeat-pulsing core.
+  // (Rising blood motes come from Game.step, which owns the particles.) null clears it.
+  setStain(stain) {
+    if (this.stain) {
+      for (const o of [this.stain.pool, this.stain.wisp, this.stain.core, this.stain.ripple, this.stain.pillar]) o.removeFromParent();
+      this.stain.pool.geometry.dispose();
+      this.glows = this.glows.filter((g) => g !== this.stain.wisp && g !== this.stain.core);
+    }
+    this.stain = null;
+    if (!stain) return;
+    const y = heightAt(stain.x, stain.z);
+    const pool = this.decal(0, stain.x, stain.z, 1.9);
+    this.rippleMat ??= new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false, uniforms: { t: worldTime },
+      vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: `varying vec2 vUv; uniform float t;
+        void main(){ float r = length(vUv - 0.5) * 2.0; float ring = 0.0;
+          for (int i = 0; i < 3; i++) { float k = fract(t * 0.45 + float(i) / 3.0); ring += (1.0 - smoothstep(0.0, 0.06, abs(r - k))) * (1.0 - k); }
+          gl_FragColor = vec4(vec3(0.5, 0.03, 0.02) * ring * (1.0 - smoothstep(0.8, 1.0, r)), 1.0); }`,
+    });
+    const ripple = new THREE.Mesh(this.rippleGeo ??= new THREE.PlaneGeometry(2, 2).rotateX(-Math.PI / 2), this.rippleMat);
+    ripple.position.set(stain.x, y + 0.04, stain.z); this.add(ripple);
+    this.pillarMat ??= new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, fog: false, uniforms: { t: worldTime },
+      vertexShader: `varying vec2 vUv; varying float vEdge;
+        void main(){ vUv = uv; vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          vEdge = abs(dot(normalize(normalMatrix * normal), normalize(-mv.xyz)));   // 1 facing the camera, 0 at the silhouette
+          gl_Position = projectionMatrix * mv; }`,
+      fragmentShader: `varying vec2 vUv; varying float vEdge; uniform float t;
+        void main(){ float h = vUv.y;
+          float streaks = pow(0.5 + 0.5 * sin(vUv.x * 40.0 + sin(h * 6.0 - t * 1.3) * 3.0), 3.0) * (0.5 + 0.5 * sin(h * 14.0 - t * 4.0));
+          float a = pow(1.0 - h, 2.2) * smoothstep(0.0, 0.1, h) * pow(vEdge, 1.5) * (0.35 + 0.65 * streaks) * (0.8 + 0.2 * sin(t * 2.4));
+          gl_FragColor = vec4(vec3(0.2, 0.008, 0.006) * a, 1.0); }`,
+    });
+    const pillar = new THREE.Mesh(this.pillarGeo ??= new THREE.CylinderGeometry(0.12, 0.4, 3, 20, 1, true).translate(0, 1.5, 0), this.pillarMat);
+    pillar.position.set(stain.x, y, stain.z); this.add(pillar);
+    const wisp = this.glow(stain.x, y + 0.5, stain.z, 0.8, 0xff3020), core = this.glow(stain.x, y + 0.5, stain.z, 0.22, 0xffc0b0);
+    this.stain = { ...stain, pool, wisp, core, ripple, pillar };
+  }
+
   note(x, z, text) {
     const y = heightAt(x, z);
     const glint = new THREE.Mesh(new THREE.OctahedronGeometry(0.08), new THREE.MeshBasicMaterial({ color: 0xffe6b0 }));
@@ -873,6 +962,7 @@ export class World {
       this.townhouse(-10.5, z, 8, 5.5 + this.rand(), h, Math.PI / 2);
       this.townhouse(10.5, z + 2, 8, 5.5 + this.rand(), 9 + this.rand() * 7, -Math.PI / 2);
     }
+    this.buildShortcut();
     for (let z = 4; z < 60; z += 11) { this.lamp(-5.4, z); this.lamp(5.4, z + 5.5, z % 2 === 0); }
     this.cart(-3.5, 15, 0.3);
     this.cart(3.2, 44, -2.6);
@@ -882,6 +972,7 @@ export class World {
     for (let z = 10; z < 58; z += 14) { this.banner(-6.3, 6.5, z, Math.PI / 2); this.banner(6.3, 6.5, z + 7, -Math.PI / 2); }
     for (const [z, side] of [[12, -1], [26, 1], [38, -1], [51, 1]]) this.cage(side * 7.3, z, 6.2, side);
     this.lantern(2.5, 3, 'Ward Gate');
+    this.note(-5.5, 12.6, 'Pinned beneath the cage, in a hunter\'s cramped hand:<br><br>"Six of us came through the Ward Gate. The cages were empty then. Count them as you pass, and do not look up for long."');
     this.shrine(-5.2, 30, Math.PI / 2); this.shrine(5.3, 47.5, -Math.PI / 2);
     this.note(-3.6, 21, 'A ledger page, the ink still tacky.<br><br>"Saint Orlan\'s Ward — sealed at the ninth bell. Names counted: four hundred and twelve. Names spared: none.<br><br>Sentence carried out by the hand that signs below."<br><br>The signature is yours.');
   }
@@ -909,6 +1000,9 @@ export class World {
     this.brazier(-12, 64); this.brazier(12, 64); this.brazier(-12.5, 86); this.brazier(12.5, 86);
     for (const [x, z] of [[-13, 70], [13.5, 77], [9, 60.5], [-14, 81]]) this.clutter(x, z);
     this.cart(10, 82, 1.2);
+    // Secrets: a vial shard tucked behind the cart, a hunter's purse among the graves.
+    this.pickup(11.7, 83.8, 'shard');
+    this.pickup(-13.6, 66.6, 'echoes', 600);
     this.tree(-13.2, 61, 10); this.tree(13, 89.5, 8.5);
     this.statue(-14.5, 75, Math.PI / 2, 0.9); this.statue(14.5, 70, -Math.PI / 2, 0.9);
     this.lantern(-10, 89, 'Cathedral Steps');
@@ -1079,6 +1173,31 @@ export class World {
     });
   }
 
+  // Shortcut: the first east townhouse gives way to a passage with an iron gate; behind it a back
+  // alley runs north behind the houses into the plaza's east corner. The gate opens only from
+  // the alley side, so the loop pays off on the way back: plaza → alley → the Ward Gate lantern.
+  buildShortcut() {
+    const i = this.facades.findIndex((f) => f.x > 0 && f.z < 0);   // the first east house (built, then cleared, so the layout's randomness is unchanged)
+    if (i >= 0) {
+      const f = this.facades[i], h = this.houses.find((g) => Math.abs(g.position.x - 10.5) < 0.01 && Math.abs(g.position.z - f.z) < 0.01);
+      h?.removeFromParent(); this.houses = this.houses.filter((g) => g !== h); this.facades.splice(i, 1);
+    }
+    // Walls: the passage's two sides, and the long east side of the alley (the house backs are the west side).
+    this.wallRun(6.2, -7.2, 16.4, -7.2, ['wall_niche', 'wall_niche'], 0, 1, { maxDepth: 1.5 });
+    this.wallRun(7.7, -2.3, 14.2, -2.3, ['wall_niche'], 0, -1, { maxDepth: 1.2 });
+    const alley = []; for (let k = 0; k < 10; k++) alley.push(k % 2 ? 'wall_buttress' : 'wall_niche');
+    this.wallRun(16.2, -7.2, 16.2, 58, alley, -1, 0, { maxDepth: 1.6 });
+    this.lamp(15.75, 26);
+    // The gate: a wrought-iron fence section on a hinge at its south end; swings into the alley.
+    const hinge = this.add(new THREE.Group()); hinge.position.set(SHORTCUT.x, 0, SHORTCUT.z0);
+    const W = SHORTCUT.z1 - SHORTCUT.z0, bars = makeEnv('fence', 2.6);
+    if (bars) { bars.scale.x *= W / bars.userData.size.x; bars.rotation.y = -Math.PI / 2; bars.position.set(0, 0, W / 2); hinge.add(bars); }
+    else { const b = new THREE.Mesh(new THREE.BoxGeometry(0.12, 2.6, W), this.mat.iron); b.position.set(0, 1.3, W / 2); hinge.add(b); }
+    this.shortcut = { hinge, open: 0 };
+  }
+
+  openShortcut() { this.shortcutOpen = true; }
+
   // A run of gothic wall-kit pieces whose FRONT faces lie on the line (x0,z0)→(x1,z1), facing
   // (fx, fz). Pieces are stretched along the run to fit it exactly and squashed in depth to
   // maxDepth so buttresses never reach into walkable space. False when a model is missing.
@@ -1122,7 +1241,7 @@ export class World {
       for (let i = 0; i < uv.count; i++) uv.setXY(i, u0 + uv.getX(i) * 0.5, v0 + uv.getY(i) * 0.5);
       return g;
     });
-    const mat = new THREE.MeshStandardMaterial({ roughness: 0.55, alphaTest: 0.5, polygonOffset: true, polygonOffsetFactor: -2, visible: false });
+    const mat = (this.decalMat = new THREE.MeshStandardMaterial({ roughness: 0.55, alphaTest: 0.5, polygonOffset: true, polygonOffsetFactor: -2, visible: false }));
     const mesh = new THREE.Mesh(mergeGeometries(geos, false), mat);
     mesh.receiveShadow = true; this.add(mesh);
     geos.forEach((g) => g.dispose());
@@ -1144,15 +1263,15 @@ export class World {
 
   // Resolve a circle moving from (x,z) to (nx,nz): slide along walls and push out of props.
   move(pos, nx, nz, r) {
-    const o = this.gateOpen, s = this.gateSealed;
-    if (inside(nx, nz, r, o, s)) { pos.x = nx; pos.z = nz; }
-    else if (inside(nx, pos.z, r, o, s)) pos.x = nx;
-    else if (inside(pos.x, nz, r, o, s)) pos.z = nz;
+    const o = this.gateOpen, s = this.gateSealed, b = !this.shortcutOpen;
+    if (inside(nx, nz, r, o, s, b)) { pos.x = nx; pos.z = nz; }
+    else if (inside(nx, pos.z, r, o, s, b)) pos.x = nx;
+    else if (inside(pos.x, nz, r, o, s, b)) pos.z = nz;
     for (const c of this.colliders) {
       const dx = pos.x - c.x, dz = pos.z - c.z, d = Math.hypot(dx, dz), m = c.r + r;
       if (d < m && d > 1e-4) {
         const px = c.x + (dx / d) * m, pz = c.z + (dz / d) * m;
-        if (inside(px, pz, r, o, s)) { pos.x = px; pos.z = pz; }
+        if (inside(px, pz, r, o, s, b)) { pos.x = px; pos.z = pz; }
       }
     }
     pos.y = heightAt(pos.x, pos.z);
@@ -1161,6 +1280,7 @@ export class World {
   update(dt, center) {
     this.time += dt;
     worldTime.value = this.time;
+    if (this.shortcutOpen && this.shortcut && this.shortcut.open < 1) { this.shortcut.open = Math.min(1, this.shortcut.open + dt * 0.6); this.shortcut.hinge.rotation.y = (Math.PI / 2) * 0.92 * (1 - (1 - this.shortcut.open) ** 3); }
     for (const L of this.lanterns) if (L.lit && L.glow) L.glow.value = 2.4 * (0.9 + Math.random() * 0.15);
     for (const f of this.flames) {
       if (f.isLight) {
@@ -1173,6 +1293,18 @@ export class World {
     for (const [i, g] of (this.glows || []).entries()) g.scale.setScalar(g.userData.base * (0.88 + Math.sin(this.time * 13 + i * 1.7) * 0.06 + Math.random() * 0.08));
     for (const m of this.mist) { m.material.uniforms.t.value = this.time; m.material.uniforms.cam.value.copy(center); }
     this.rose.material.uniforms.t.value = this.time;
+    for (const k of this.pickups ?? []) {
+      k.obj.visible = k.wisp.visible = k.core.visible = !k.taken;
+      const yy = heightAt(k.x, k.z) + 0.42 + Math.sin(this.time * 2.2 + k.x) * 0.07;
+      k.wisp.position.y = k.core.position.y = yy;
+    }
+    if (this.stain) {
+      // Heartbeat: two quick beats, then rest.
+      const ph = (this.time * 1.1) % 1, beat = Math.exp(-((ph - 0.08) ** 2) / 0.002) + 0.7 * Math.exp(-((ph - 0.26) ** 2) / 0.002);
+      const S = this.stain, yy = heightAt(S.x, S.z) + 0.5 + Math.sin(this.time * 1.7) * 0.06;
+      S.wisp.position.y = S.core.position.y = yy;
+      S.wisp.userData.base = 0.75 + beat * 0.45; S.core.userData.base = 0.2 + beat * 0.14;
+    }
     for (const n of this.notes) { n.glint.rotation.y += dt * 2; n.glint.visible = !n.read; n.glint.position.y = heightAt(n.x, n.z) + 0.35 + Math.sin(this.time * 3) * 0.05; }
     // Ash drifts with the wind and wraps around the camera.
     const p = this.ash.geometry.attributes.position;
