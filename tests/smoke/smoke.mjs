@@ -51,6 +51,13 @@ for (const [name, ctxOpts] of Object.entries(profiles)) {
     if (!s.playerOk) errors.push('player state is invalid (NaN position or dead on spawn)');
     if (s.frame - f0 < 5) errors.push(`only ${s.frame - f0} frames rendered in 4 s`);
     console.log(`${name}: ${s.frame - f0} frames in 4 s`);
+
+    // Phones have no E key: the lantern menu's "Leave the lantern" button must close it.
+    if (ctxOpts.hasTouch) {
+      await page.evaluate(() => window.game.openLantern());
+      await page.tap('#lantern-menu .leave');
+      if (await page.evaluate(() => window.game.ui.lanternOpen)) errors.push('"Leave the lantern" did not close the lantern menu');
+    }
   } catch (e) {
     errors.push(String(e));
   }

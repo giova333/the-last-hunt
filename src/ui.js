@@ -132,6 +132,7 @@ export class UI {
     m.querySelector('.rows').innerHTML = rows.map((r, i) =>
       `<button class="row${r.key === bought ? ' bought' : ''}" data-key="${r.key}"${r.can ? '' : ' disabled'}><b>${i + 1}</b><span>${r.label}</span><small>${r.desc}</small></button>`).join('');
     m.querySelectorAll('.row').forEach((el) => { el.onclick = () => onBuy(el.dataset.key); });
+    m.querySelector('.leave').onclick = () => this.hideLantern();   // the touch-only way out (desktop uses E)
     m.classList.remove('hidden');
   }
   hideLantern() { this.lanternMenu?.classList.add('hidden'); }
